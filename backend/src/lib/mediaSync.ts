@@ -61,6 +61,28 @@ function isLocalUploadPath(value: unknown): value is string {
   return typeof value === "string" && value.startsWith("/uploads/");
 }
 
+// Same extension set lib/upload.ts already accepts on the way IN — mirrored
+// here as the way OUT. A Blob built with no explicit `type` (the bug this
+// fixes) gets an empty MIME type on the multipart part, which some
+// destination servers reject outright — including WebP, despite it being
+// an allowed type, since "" isn't "image/webp". Extension-based (not
+// magic-byte sniffing) to match this codebase's existing validation
+// convention and avoid a new dependency; every locally-stored file's
+// extension is already trustworthy — lib/upload.ts only ever writes one of
+// these five in the first place (see its ALLOWED_EXTENSIONS/
+// ALLOWED_MIME_PATTERN).
+const MIME_BY_EXTENSION: Record<string, string> = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+};
+
+function inferMimeType(filePath: string): string {
+  return MIME_BY_EXTENSION[path.extname(filePath).toLowerCase()] ?? "application/octet-stream";
+}
+
 // The standardized contract always returns an absolute URL (e.g.
 // "https://tenant-domain/uploads/filename.webp"), but a destination
 // implementation that instead returns a root-relative path (e.g.
@@ -111,7 +133,7 @@ async function uploadImageToDestination(
   }
 
   const form = new FormData();
-  form.append(UPLOAD_FIELD_NAME, new Blob([fileBuffer]), path.basename(localFilePath));
+  form.append(UPLOAD_FIELD_NAME, new Blob([fileBuffer], { type: inferMimeType(localFilePath) }), path.basename(localFilePath));
 
   logger.info({ mediaSync: { ...context, uploadUrl } }, "media sync: uploading image");
 
