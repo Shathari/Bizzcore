@@ -17,6 +17,7 @@ import websiteContentRoutes from "./routes/websiteContent";
 import superAdminWebsiteContentRoutes from "./routes/superAdminWebsiteContent";
 import superAdminFeatureCatalogRoutes from "./routes/superAdminFeatureCatalog";
 import mockExternalSiteRoutes from "./routes/mockExternalSite";
+import publicAdminUploadsRoutes from "./routes/publicAdminUploads";
 import superAdminSubscriptionsRoutes from "./routes/superAdminSubscriptions";
 import superAdminPlansRoutes from "./routes/superAdminPlans";
 import subscriptionRoutes from "./routes/subscription";
@@ -80,6 +81,10 @@ export function createApp() {
   app.use("/api/connector-login", connectorLoginRoutes);
   app.use("/api/website-content", websiteContentRoutes);
   app.use("/api/mock-external-site", mockExternalSiteRoutes);
+  // Local dev/demo reference implementation of the standardized media-sync
+  // upload contract every tenant destination site now implements — see
+  // routes/publicAdminUploads.ts and lib/mediaSync.ts's deriveUploadUrl.
+  app.use("/api/public/admin", publicAdminUploadsRoutes);
 
   return app;
 }

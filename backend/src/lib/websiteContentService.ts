@@ -8,6 +8,7 @@ import { logger } from "./logger";
 import { encryptField, decryptField } from "./piiCrypto";
 import { logConnectorAccess } from "./connectorAccessLog";
 import { buildCredentialRefresher, reconcileCredentialStatus, ensureFreshToken } from "./connectorLogin";
+import { detectImageFieldKeys, syncMediaFields, parseMediaUploads, serializeMediaUploads } from "./mediaSync";
 
 // Shared by both the Business-Admin router (routes/websiteContent.ts,
 // tenantId from the JWT) and the Super-Admin router
@@ -245,9 +246,54 @@ function logSyncStatus(
 async function pushCreate(tenantId: string, integration: ActiveIntegration, data: Record<string, unknown>, actorId: string | null) {
   const payload = ensureSlug(data, integration.feature.fields);
   const confidentialFields = getConfidentialFields(integration);
-  const outgoingPayload = stripNonWriteEnabledConfidential(payload, confidentialFields, getConfidentialWriteEnabled(integration));
   const fresh = await ensureFreshToken(integration, tenantId, actorId);
   const refresher = buildCredentialRefresher(fresh, tenantId, actorId);
+
+  // Detects this feature's image-type fields (generic — see
+  // lib/mediaSync.ts, no feature/field name ever hardcoded) and, when any
+  // carry a local /uploads/... path, uploads them to the tenant's
+  // destination site BEFORE this record is ever pushed. A feature with no
+  // image field is a zero-cost no-op — mediaResult.payload === payload.
+  const mediaResult = await syncMediaFields({
+    tenantId,
+    contentType: integration.feature.key,
+    integration: fresh,
+    imageFieldKeys: detectImageFieldKeys(integration.feature.fields),
+    payload,
+    existingMediaUploads: {}, // brand-new item — nothing cached yet
+    credentialRefresher: refresher,
+  });
+
+  if (!mediaResult.ok) {
+    // Per spec: an image-upload failure means this record is never sent at
+    // all — not even attempted — unlike a JSON-push failure below, which
+    // still reaches the external site's create endpoint.
+    await logConnectorAccess({
+      tenantId,
+      featureId: integration.featureId,
+      websiteIntegrationId: integration.id,
+      actorId,
+      action: "SYNC_EXPORT",
+      outcome: "failure",
+      details: { method: "POST", note: "image_upload_failed" },
+    });
+    const failedItem = await prisma.websiteContentItem.create({
+      data: {
+        tenantId,
+        featureId: integration.featureId,
+        externalId: null,
+        payload: JSON.stringify(encryptConfidentialFields(payload, confidentialFields)),
+        syncStatus: "failed",
+        lastError: mediaResult.error,
+        lastSyncedAt: null,
+        mediaUploads: serializeMediaUploads(mediaResult.mediaUploads),
+      },
+    });
+    logSyncStatus(tenantId, integration.feature.key, failedItem);
+    return failedItem;
+  }
+
+  const outgoingPayload = stripNonWriteEnabledConfidential(mediaResult.payload, confidentialFields, getConfidentialWriteEnabled(integration));
   const result = await callWebsiteApi(fresh, "POST", null, outgoingPayload, { tenantId, contentType: integration.feature.key }, refresher);
   await reconcileCredentialStatus(integration.id, fresh.credentialStatus, result.status);
   await logConnectorAccess({
@@ -267,10 +313,15 @@ async function pushCreate(tenantId: string, integration: ActiveIntegration, data
       tenantId, // tenant-scoped
       featureId: integration.featureId,
       externalId: result.externalId ?? null,
+      // Local payload always keeps the LOCAL /uploads/... path — only the
+      // outbound copy sent above ever carries the destination URL. This is
+      // what keeps the dashboard's own edit form/thumbnail working and lets
+      // future syncs detect "unchanged" by comparing local paths.
       payload: JSON.stringify(encryptConfidentialFields(payload, confidentialFields)),
       syncStatus: result.success ? "synced" : "failed",
       lastError: result.error ?? null,
       lastSyncedAt: result.success ? new Date() : null,
+      mediaUploads: serializeMediaUploads(mediaResult.mediaUploads),
     },
   });
   logSyncStatus(tenantId, integration.feature.key, item);
@@ -284,15 +335,54 @@ async function pushCreate(tenantId: string, integration: ActiveIntegration, data
 async function pushRetryCreate(
   tenantId: string,
   integration: ActiveIntegration,
-  existingItem: { id: string },
+  existingItem: { id: string; mediaUploads: string | null },
   data: Record<string, unknown>,
   actorId: string | null
 ) {
   const payload = ensureSlug(data, integration.feature.fields);
   const confidentialFields = getConfidentialFields(integration);
-  const outgoingPayload = stripNonWriteEnabledConfidential(payload, confidentialFields, getConfidentialWriteEnabled(integration));
   const fresh = await ensureFreshToken(integration, tenantId, actorId);
   const refresher = buildCredentialRefresher(fresh, tenantId, actorId);
+
+  const mediaResult = await syncMediaFields({
+    tenantId,
+    contentType: integration.feature.key,
+    itemId: existingItem.id,
+    integration: fresh,
+    imageFieldKeys: detectImageFieldKeys(integration.feature.fields),
+    payload,
+    // A prior attempt may already have uploaded some of this item's images
+    // successfully (even if the JSON push itself then failed) — reusing
+    // that cache is what makes a retry never re-upload an unchanged image.
+    existingMediaUploads: parseMediaUploads(existingItem.mediaUploads),
+    credentialRefresher: refresher,
+  });
+
+  if (!mediaResult.ok) {
+    await logConnectorAccess({
+      tenantId,
+      featureId: integration.featureId,
+      websiteIntegrationId: integration.id,
+      actorId,
+      action: "SYNC_EXPORT",
+      outcome: "failure",
+      details: { method: "POST", retry: true, note: "image_upload_failed" },
+    });
+    const failedItem = await prisma.websiteContentItem.update({
+      where: { id: existingItem.id },
+      data: {
+        payload: JSON.stringify(encryptConfidentialFields(payload, confidentialFields)),
+        externalId: null,
+        syncStatus: "failed",
+        lastError: mediaResult.error,
+        mediaUploads: serializeMediaUploads(mediaResult.mediaUploads),
+      },
+    });
+    logSyncStatus(tenantId, integration.feature.key, failedItem);
+    return failedItem;
+  }
+
+  const outgoingPayload = stripNonWriteEnabledConfidential(mediaResult.payload, confidentialFields, getConfidentialWriteEnabled(integration));
   const result = await callWebsiteApi(
     fresh,
     "POST",
@@ -323,6 +413,7 @@ async function pushRetryCreate(
       syncStatus: result.success ? "synced" : "failed",
       lastError: result.error ?? null,
       lastSyncedAt: result.success ? new Date() : undefined,
+      mediaUploads: serializeMediaUploads(mediaResult.mediaUploads),
     },
   });
   logSyncStatus(tenantId, integration.feature.key, item);
@@ -332,7 +423,7 @@ async function pushRetryCreate(
 async function pushUpdate(
   tenantId: string,
   integration: ActiveIntegration,
-  existingItem: { id: string; externalId: string | null },
+  existingItem: { id: string; externalId: string | null; mediaUploads: string | null },
   data: Record<string, unknown>,
   actorId: string | null
 ) {
@@ -342,11 +433,46 @@ async function pushUpdate(
   const updateMethod = integration.endpoints.some((e) => e.method === "PATCH") ? "PATCH" : "PUT";
   const fresh = await ensureFreshToken(integration, tenantId, actorId);
   const refresher = buildCredentialRefresher(fresh, tenantId, actorId);
+
+  const mediaResult = await syncMediaFields({
+    tenantId,
+    contentType: integration.feature.key,
+    itemId: existingItem.id,
+    integration: fresh,
+    imageFieldKeys: detectImageFieldKeys(integration.feature.fields),
+    payload,
+    existingMediaUploads: parseMediaUploads(existingItem.mediaUploads),
+    credentialRefresher: refresher,
+  });
+
+  if (!mediaResult.ok) {
+    await logConnectorAccess({
+      tenantId,
+      featureId: integration.featureId,
+      websiteIntegrationId: integration.id,
+      actorId,
+      action: "SYNC_EXPORT",
+      outcome: "failure",
+      details: { method: updateMethod, note: "image_upload_failed" },
+    });
+    const failedItem = await prisma.websiteContentItem.update({
+      where: { id: existingItem.id },
+      data: {
+        payload: JSON.stringify(payload),
+        syncStatus: "failed",
+        lastError: mediaResult.error,
+        mediaUploads: serializeMediaUploads(mediaResult.mediaUploads),
+      },
+    });
+    logSyncStatus(tenantId, integration.feature.key, failedItem);
+    return failedItem;
+  }
+
   const result = await callWebsiteApi(
     fresh,
     updateMethod,
     existingItem.externalId,
-    payload,
+    mediaResult.payload,
     {
       tenantId,
       contentType: integration.feature.key,
@@ -371,6 +497,7 @@ async function pushUpdate(
       syncStatus: result.success ? "synced" : "failed",
       lastError: result.error ?? null,
       lastSyncedAt: result.success ? new Date() : undefined,
+      mediaUploads: serializeMediaUploads(mediaResult.mediaUploads),
     },
   });
   logSyncStatus(tenantId, integration.feature.key, item);

@@ -515,6 +515,18 @@ model WebsiteContentItem {
   syncStatus   String    @default("pending") // pending | synced | failed
   lastError    String?
   lastSyncedAt DateTime?
+  // JSON: { [dashboardFieldKey]: { localPath, destinationUrl } } — the last
+  // successful media-sync upload per image-type field (see lib/mediaSync.ts).
+  // Keyed by the LOCAL /uploads/... path at the time of that upload, so a
+  // later push can tell "unchanged" (same localPath, reuse destinationUrl,
+  // no re-upload) from "new/replaced" (different localPath, re-upload)
+  // without hashing file contents. Deliberately independent of syncStatus —
+  // an image can be here (successfully uploaded) even when the record's own
+  // JSON push subsequently failed, so a retry never re-uploads an image that
+  // already reached the destination. Null/absent = no field ever uploaded
+  // yet (a pre-existing item from before this feature shipped, or a feature
+  // with no image field at all).
+  mediaUploads String?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
