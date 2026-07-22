@@ -1,6 +1,6 @@
-# Kaleri Saree Console
+# Bizcore Console
 
-Multi-tenant SaaS operating system for saree/ethnic-wear boutiques. A Super
+Multi-tenant SaaS operating system for businesses. A Super
 Admin provisions boutique tenants; each tenant gets an isolated dashboard for
 customers, communications, their website content, social media, and an AI
 marketing assistant.
