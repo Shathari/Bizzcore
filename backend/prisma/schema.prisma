@@ -1,0 +1,893 @@
+// BizzCore — Prisma schema
+//
+// PROVIDER SWAP: this schema is written to run unmodified on either SQLite
+// (local dev) or PostgreSQL (production). To swap, change `provider` below
+// and point DATABASE_URL at a Postgres connection string — nothing else in
+// this file needs to change.
+//
+// Because SQLite has no native enum type, "enum-shaped" fields (role,
+// status, segment, channel, etc.) are modeled as `String` with the allowed
+// values documented in a comment and enforced at the API boundary via zod.
+// If you migrate to Postgres-only and no longer care about SQLite parity,
+// these can be upgraded to real Prisma `enum` types.
+//
+// Same reasoning for `Json` fields: SQLite's connector doesn't support
+// Prisma's Json type at all, so JSON-shaped data (WebsiteContentItem.payload,
+// AuditLog.details) is stored as a JSON-encoded String and parsed/
+// serialized in application code on both providers.
+
+datasource db {
+  provider = "sqlite" // swap to "postgresql" for production
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy & identity
+// ---------------------------------------------------------------------------
+
+model Tenant {
+  id                 String    @id @default(cuid())
+  businessName       String
+  websiteUrl         String?
+  ownerEmail         String
+  ownerPhone         String?
+  status             String    @default("PendingSetup") // Active | Suspended | PendingSetup
+  // Replaces the old placeholder `plan String?` field (confirmed empty on
+  // every existing tenant before this migration) with the real
+  // subscription relation. SetNull, not Cascade/Restrict: deleting a Plan
+  // must never delete or block-delete the tenants subscribed to it, just
+  // leave them unassigned.
+  planId             String?
+  plan               Plan?     @relation(fields: [planId], references: [id], onDelete: SetNull)
+  subscriptionStatus String    @default("Trialing") // Active | PastDue | Cancelled | Trialing
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  address            String?
+  customDomain       String?   @unique
+  // Set from the cover/logo image uploaded when Super Admin creates the
+  // business (see routes/super-admin.ts) — shown as the Business Admin's
+  // dashboard avatar (TopBar).
+  logoUrl            String?
+  // Soft-delete marker (routes/super-admin.ts DELETE /businesses/:id) — set
+  // instead of removing the row so the business disappears from the
+  // dashboard and blocks login/tenant-scoped access (see
+  // middleware/resolveTenant.ts, routes/auth.ts) while remaining
+  // recoverable via POST /businesses/:id/restore. Independent of `status`:
+  // a Suspended tenant can still log in to see why; a soft-deleted one
+  // can't at all. Permanent delete (see AuditLog.actor/targetTenant below)
+  // removes the row entirely instead of setting this.
+  deletedAt          DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  users                     User[]
+  customers                 Customer[]
+  scheduledContent          ScheduledContent[]
+  aiGenerations             AIGeneration[]
+  integrationCredentials    IntegrationCredential[]
+  conversations             Conversation[]
+  messages                  Message[]
+  inquiries                 Inquiry[]
+  purchases                 Purchase[]
+  websiteVisits             WebsiteVisit[]
+  socialComments            SocialComment[]
+  features                  Feature[]
+  websiteIntegrations       WebsiteIntegration[]
+  websiteContentItems       WebsiteContentItem[]
+  auditLogTargets           AuditLog[]                 @relation("AuditLogTarget")
+  accessLogs                AccessLog[]
+  connectorAccessLogs       ConnectorAccessLog[]
+  featureOverrides          TenantFeatureOverride[]
+  addOns                    TenantAddOn[]
+  customDevelopmentRequests CustomDevelopmentRequest[]
+  usageCounters             UsageCounter[]
+
+  @@index([status])
+}
+
+model User {
+  id                 String    @id @default(cuid())
+  // null only for SUPER_ADMIN; every ADMIN belongs to exactly one tenant
+  tenantId           String?
+  tenant             Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name               String
+  email              String    @unique
+  phone              String?
+  passwordHash       String
+  role               String    @default("ADMIN") // SUPER_ADMIN | ADMIN
+  mustChangePassword Boolean   @default(false)
+  lastLoginAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  aiGenerations       AIGeneration[]
+  auditLogActions     AuditLog[]           @relation("AuditLogActor")
+  passwordResetTokens PasswordResetToken[]
+
+  @@index([tenantId])
+}
+
+// Self-service "forgot password" flow. tokenHash stores sha256(raw token) —
+// only the raw token (sent in the reset-link email) can redeem it, same
+// "never store the secret itself" principle as lib/crypto.ts /
+// lib/password.ts. Single-use (usedAt) and short-lived (expiresAt).
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Customer Manager
+// ---------------------------------------------------------------------------
+
+model Customer {
+  id               String    @id @default(cuid())
+  tenantId         String
+  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name             String
+  // AES-256-GCM ciphertext ("iv:authTag:ciphertext", see lib/piiCrypto.ts) —
+  // never plaintext, never returned by any API response. phoneMasked/phoneHash
+  // are the only phone-derived data safe to read back to the frontend or use
+  // for lookups; decrypting `phone` itself is JIT-only and must be logged to
+  // AccessLog (see routes/customers.ts, integrations/whatsapp.ts).
+  phone            String
+  phoneMasked      String // display hint, e.g. "+9198••••••75" — safe to read
+  phoneHash        String // HMAC-SHA256 lookup token — exact-match search/de-dup without decrypting
+  email            String?
+  segment          String    @default("Regular") // Regular | VIP | Bridal
+  // Ciphertext like `phone` above, not a queryable date — see birthdayMonthDay.
+  birthday         String?
+  // Plaintext "MM-DD" (no year) derived from birthday at write time. Low
+  // sensitivity on its own; exists only so a birthday-automation cron can
+  // find "birthdays today/this month" without decrypting every row. The
+  // automation still JIT-decrypts `birthday` itself (for the year, if
+  // needed) only for rows that already matched here.
+  birthdayMonthDay String?
+  // Float rather than Decimal so this field behaves identically on SQLite
+  // and Postgres; move to Decimal(@db.Decimal) if precise currency math
+  // becomes a requirement post-Postgres-migration.
+  totalSpent       Float     @default(0)
+  lastPurchase     DateTime?
+  notes            String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  conversations Conversation[]
+  purchases     Purchase[]
+  inquiries     Inquiry[]
+  accessLogs    AccessLog[]
+
+  @@index([tenantId])
+  @@index([tenantId, segment])
+  @@index([tenantId, phoneHash])
+  @@index([tenantId, birthdayMonthDay])
+}
+
+// Individual sale records. Drives the Home dashboard revenue trend chart and
+// keeps Customer.totalSpent / lastPurchase current — not explicitly named in
+// the spec's table list, but required to back "sales analytics line chart
+// ... sourced from customer spend/purchase data" with real time-series data.
+model Purchase {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  amount      Float
+  purchasedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, purchasedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Communication Center
+// ---------------------------------------------------------------------------
+
+model Conversation {
+  id            String    @id @default(cuid())
+  tenantId      String
+  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customerId    String?
+  customer      Customer? @relation(fields: [customerId], references: [id])
+  channel       String // WHATSAPP | WEBSITE_CHAT | INSTAGRAM_DM
+  contactName   String?
+  contactHandle String? // phone number or IG handle depending on channel
+  lastMessageAt DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+
+  messages Message[]
+
+  @@index([tenantId])
+  @@index([tenantId, channel])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  tenantId       String
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  direction      String // INBOUND | OUTBOUND
+  body           String
+  status         String       @default("sent") // sent | delivered | read | failed
+  sentAt         DateTime     @default(now())
+
+  @@index([tenantId])
+  @@index([conversationId])
+}
+
+// Leads/inquiries captured from website chat, WhatsApp, or Instagram — backs
+// the Home dashboard "Today's Inquiries" stat card.
+model Inquiry {
+  id         String    @id @default(cuid())
+  tenantId   String
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+  source     String // WEBSITE | WHATSAPP | INSTAGRAM
+  message    String
+  status     String    @default("open") // open | followed_up | closed
+  createdAt  DateTime  @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, createdAt])
+}
+
+// Minimal pageview log backing the Home dashboard "Website Visitors" stat.
+model WebsiteVisit {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  path      String?
+  visitedAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, visitedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Website Manager — dynamic Feature Mapping system
+//
+// A "feature" (Products, Collections, Categories, Banners, Offers,
+// Testimonials, Blogs, FAQs, Contact Details, or any custom feature a
+// tenant Admin creates — e.g. Order Enquiries, Support Tickets) is a
+// TENANT-SCOPED catalog entry (see Feature below and lib/featureCatalog.ts)
+// — not a compile-time list, and — since the tenant-scoping migration
+// (prisma/scripts/tenant-scope-features.ts) — not a single row shared
+// across every tenant either. Two tenants both using a "PRODUCTS" feature
+// each have their OWN independent Feature row (own id, own fields[]) keyed
+// by (tenantId, key); editing one's field list can never affect the
+// other's, even though both use the same human-facing key. FeatureTemplate
+// below is the separate, genuinely-global read-only catalog of the
+// original 9 built-ins, used only to seed a NEW tenant's own copy on first
+// use — it is never referenced by a foreign key from anywhere else. Super
+// Admin maps a feature to a tenant's own external website API via
+// WebsiteIntegration; only mapped+active features exist as a dashboard
+// module for that tenant at all (see routes/websiteContent.ts). There is
+// no separate locally-owned schema per feature — the tenant's external
+// site is the source of truth, and WebsiteContentItem is a local mirror
+// for the dashboard to read/write against.
+// ---------------------------------------------------------------------------
+
+// The read-only, genuinely-global template catalog for the original 9
+// built-in content types — NOT referenced by any foreign key. Exists only
+// so the "add this built-in feature" flow has a source to clone FROM when
+// a tenant first adopts e.g. "PRODUCTS"; every tenant's actual, working
+// Feature row (below) is its own independent copy from that point on. A
+// later change to a template (there is no admin UI for this today — only
+// editing prisma/builtInFeatures.ts and re-running the seed) intentionally
+// never reaches back into any tenant that already cloned it, customized or
+// not — see lib/featureCatalog.ts's ensureBuiltIns.
+model FeatureTemplate {
+  id            String   @id @default(cuid())
+  key           String   @unique
+  label         String
+  singularLabel String?
+  isSingleton   Boolean  @default(false)
+  fields        String // JSON-encoded FieldDef[] — same shape as Feature.fields
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// Tenant-scoped: each tenant's own independent copy of a content type's
+// field schema. `fields` defines the dashboard form Business Admin sees
+// for THIS tenant only; a tenant's WebsiteIntegration.fieldMapping can
+// independently rename these to whatever field names that tenant's own
+// external site expects. Two different tenants' Feature rows for the same
+// `key` (e.g. both "PRODUCTS") are fully unrelated once created — see
+// FeatureTemplate above for the one-time clone-on-adopt source.
+model Feature {
+  id            String   @id @default(cuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  key           String // e.g. "PRODUCTS", "ORDER_ENQUIRIES" — immutable once created, unique per tenant (not globally)
+  label         String
+  singularLabel String? // optional override for "+ Add X" — falls back to stripping a trailing "s" from label
+  // True when this tenant's copy originated from a FeatureTemplate row
+  // (still per-tenant, still independently editable/deletable) rather than
+  // being created from scratch as a custom feature for this tenant only.
+  isBuiltIn     Boolean  @default(false)
+  isSingleton   Boolean  @default(false) // at most one item per tenant (e.g. Contact Details)
+  fields        String // JSON-encoded FieldDef[]: { key, label, type, required?, options? }
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  websiteIntegrations WebsiteIntegration[]
+  websiteContentItems WebsiteContentItem[]
+  connectorAccessLogs ConnectorAccessLog[]
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+}
+
+// Per-tenant, per-feature configuration of each business's OWN external
+// website/CMS API — Super-Admin-configured and Super-Admin-only visible
+// (baseUrl/authType/credentials/fieldMapping/endpoints never reach a
+// Business Admin client, at any permission level). `active` is the
+// tenant's "No Access" gate — presence of an active row is what drives
+// "only the features mapped by Super Admin appear" at all.
+// `permissionLevel`, when active, is the finer-grained "View Only" vs
+// "Manage" gate a Business Admin's write actions are checked against (see
+// middleware/requireContentWriteAccess.ts) — read access only needs
+// `active`; they never see this row itself either way.
+model WebsiteIntegration {
+  id                       String    @id @default(cuid())
+  tenantId                 String
+  tenant                   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  featureId                String
+  feature                  Feature   @relation(fields: [featureId], references: [id])
+  baseUrl                  String
+  authType                 String    @default("none") // none | bearer | apiKey | basic | login — shared default across every HTTP method unless overridden per-method below
+  // AES-256-GCM encrypted JSON blob, shape depends on authType — see
+  // lib/websiteApiClient.ts. Null when authType is "none" or "login" (the
+  // login-specific fields below carry everything for that mode instead).
+  encryptedCredentials     String?
+  // --- authType "login" only ------------------------------------------
+  // The tenant Admin supplies their OWN external site's login credentials
+  // (not a BizzCore account) instead of pasting a raw token; the backend
+  // performs that login on their behalf and stores what comes back. Same
+  // "written, never read back" discipline as encryptedCredentials — none
+  // of this ever reaches a Business-Admin- or Super-Admin-facing response.
+  loginUrl                 String? // the external site's own login endpoint (e.g. https://tenant-site.example/api/auth/login) — not a secret itself
+  loginEmailEncrypted      String? // AES-256-GCM encrypted — login identifier on the TENANT'S site
+  loginPasswordEncrypted   String? // AES-256-GCM encrypted — kept (not used-once) because automatic 401 re-login needs it again later
+  accessTokenEncrypted     String? // AES-256-GCM encrypted — the token actually sent as Authorization: Bearer <token>; refreshed via loginUrl manually or automatically after a 401
+  tokenExpiresAt           DateTime? // from the login response, when the external API provides one — informational display only; expiry is actually discovered live via a 401, not by checking this first
+  refreshTokenEncrypted    String? // AES-256-GCM encrypted — populated only if the external API's login response includes one
+  // "OK" | "CredentialsExpired" — distinct from a generic sync/import
+  // failure: only ever set to "CredentialsExpired" when an automatic
+  // 401-triggered re-login itself fails (stored password now wrong, login
+  // endpoint erroring, etc.), so the tenant Admin sees "reconnect this"
+  // rather than a vague sync error. Cleared back to "OK" on any successful
+  // login/refresh. Meaningful for every authType, not just "login" — a
+  // manually-pasted bearer token can equally go stale.
+  credentialStatus         String    @default("OK")
+  active                   Boolean   @default(true)
+  // Per-feature, 3-state with `active`: inactive = No Access, active+VIEW
+  // = read-only, active+MANAGE = Business Admin can
+  // create/update/delete/import this feature's data too. Replaces the old
+  // tenant-wide Tenant.websiteContentManagedByAdmin boolean (per-feature,
+  // not per-tenant) and the old canBusinessAdminManage boolean (adds the
+  // explicit "View Only" state instead of collapsing it into "false").
+  permissionLevel          String    @default("VIEW") // VIEW | MANAGE
+  // Optional JSON { dashboardFieldKey: externalFieldKey } — tenant-specific
+  // rename applied to outbound payloads and inbound import parsing, since
+  // two tenants on the same global Feature may name fields differently on
+  // their own sites. Null means dashboard keys are sent as-is.
+  fieldMapping             String?
+  // Optional JSON { listPath?: string; itemPath?: string } — explicit
+  // override for where records live in this tenant's response body,
+  // consulted BEFORE the auto-detect heuristic in
+  // lib/websiteApiClient.ts's extractList/fetchWebsiteApiSingle. listPath
+  // "" means the response body itself is the array; a dot-path (e.g.
+  // "data.products") walks into the raw parsed body. Null means: use the
+  // heuristic (bare array, then data-envelope, then items/results/records).
+  responseMapping          String?
+  // Set after every completed import — backs the Business Admin's
+  // read-only Website Modules dashboard ("Import" vs "Sync Now" button,
+  // last-synced time, imported record count). Null until the first import.
+  lastImportedAt           DateTime?
+  lastImportRecordCount    Int?
+  // JSON-encoded DiscoveredField[] (see lib/websiteApiClient.ts) captured
+  // by the "Analyze Endpoint" action — a snapshot of the external GET
+  // response's actual shape (dot/bracket paths + inferred types), used to
+  // populate the field-mapping dropdowns and to diff against on "Refresh
+  // Schema". Purely diagnostic/UI metadata — never consulted by the
+  // create/update/delete/import path itself, which only ever reads
+  // `fieldMapping`. Null until the first Analyze.
+  discoveredSchema         String?
+  schemaDiscoveredAt       DateTime?
+  // Optional DASHBOARD field key (e.g. "slug", "code", "sku" — never a
+  // hardcoded feature-specific name) whose CURRENT VALUE in an item's
+  // payload addresses it on PUT/PATCH/DELETE via a query parameter
+  // (baseUrl?{param}={value}) instead of the default REST convention
+  // (baseUrl/externalId). The query param name is the field-mapped
+  // (external) name when one exists for this key, else the key itself —
+  // see lib/websiteApiClient.ts's buildLookupQueryUrl. Read fresh from the
+  // payload on every call, never cached. Null (the default) preserves the
+  // exact prior path-parameter convention for tenant sites that genuinely
+  // address resources by an id in the URL path — fully backward
+  // compatible, opt-in only.
+  lookupKey                String?
+  // JSON string[] of DASHBOARD field keys flagged "Confidential" in the
+  // Map Your Data step — fields on the tenant's own site holding sensitive
+  // data (payment info, ID numbers, password hashes, etc.) that this
+  // feature still needs functionally. Values for these keys are encrypted
+  // (lib/piiCrypto.ts — same utility/key as Customer PII) before
+  // WebsiteContentItem.payload is ever persisted, and are stripped out of
+  // every read response (Data Manager list/detail, sync previews) — see
+  // lib/websiteContentService.ts's serializeItem. Never logged.
+  confidentialFields       String?
+  // JSON string[], always a subset of confidentialFields — a confidential
+  // field only reaches this list via a second, explicit confirmation
+  // separate from the feature's general permissionLevel/MANAGE toggle (see
+  // routes/superAdminWebsiteIntegrations.ts). Fields confidential but NOT
+  // in this list are silently excluded from outgoing create/update payloads
+  // (lib/websiteContentService.ts's stripNonWriteEnabledConfidential),
+  // regardless of permissionLevel — so marking a field Confidential is
+  // safe-by-default (read/import only) until someone deliberately opts it
+  // into write-back too.
+  confidentialWriteEnabled String?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  endpoints           WebsiteIntegrationEndpoint[]
+  schemaSnapshots     WebsiteIntegrationSchemaSnapshot[]
+  connectorAccessLogs ConnectorAccessLog[]
+
+  @@unique([tenantId, featureId])
+  @@index([tenantId])
+}
+
+// Append-only history of "Analyze Endpoint"/"Refresh Schema" results —
+// WebsiteIntegration.discoveredSchema/schemaDiscoveredAt above stay as the
+// fast-access "current" snapshot (every existing read path is unchanged),
+// this is the log of every snapshot that ever superseded a previous one, so
+// Super Admin can see when and how a tenant's external API shape actually
+// changed over time instead of only ever comparing against the single most
+// recent prior state. Pruned to the most recent SCHEMA_SNAPSHOT_RETENTION
+// rows per integration on insert (see lib/websiteIntegrationConfig.ts) —
+// this is a low-frequency, admin-triggered action, but unbounded either way
+// isn't a guarantee worth making.
+model WebsiteIntegrationSchemaSnapshot {
+  id            String             @id @default(cuid())
+  integrationId String
+  integration   WebsiteIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  fields        String // JSON-encoded DiscoveredField[] — same shape as WebsiteIntegration.discoveredSchema
+  discoveredAt  DateTime           @default(now())
+
+  @@index([integrationId, discoveredAt])
+}
+
+// Optional per-HTTP-method override of a feature's integration — lets
+// Super Admin point GET/POST/PUT/PATCH/DELETE at distinct URLs (and,
+// rarely, distinct auth) instead of the default single-baseUrl REST
+// convention in lib/websiteApiClient.ts (POST to baseUrl, PUT/PATCH/DELETE
+// to `${baseUrl}/${externalId}`). A method with no row here falls back to
+// that convention using the parent WebsiteIntegration's baseUrl/authType/
+// encryptedCredentials — this table only needs rows for methods that
+// actually deviate. authType/encryptedCredentials being null (the common
+// case) means "use the shared auth from WebsiteIntegration", not "no auth"
+// — that's what "shared authentication ... with optional per-method
+// override" means in practice.
+model WebsiteIntegrationEndpoint {
+  id                   String             @id @default(cuid())
+  integrationId        String
+  integration          WebsiteIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  method               String // GET | POST | PUT | PATCH | DELETE
+  url                  String? // null = fall back to the parent's baseUrl + REST convention
+  authType             String? // null = fall back to the parent's shared authType
+  encryptedCredentials String? // null = fall back to the parent's shared encryptedCredentials
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  @@unique([integrationId, method])
+}
+
+// Local mirror of content pushed to (or fetched from) a tenant's external
+// website API. This is what the dashboard actually lists/edits — writes go
+// through the external API first (source of truth per the chosen
+// architecture), then this row records the outcome, so a slow/down
+// external API doesn't block the dashboard from being readable, and a
+// failed sync stays visible (with lastError) instead of silently losing
+// the admin's input.
+model WebsiteContentItem {
+  id           String    @id @default(cuid())
+  tenantId     String
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  featureId    String
+  feature      Feature   @relation(fields: [featureId], references: [id])
+  externalId   String? // id assigned by the tenant's external API once synced
+  payload      String // JSON-encoded content fields — shape is feature-specific and tenant-defined, not fixed columns
+  syncStatus   String    @default("pending") // pending | synced | failed
+  lastError    String?
+  lastSyncedAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, featureId])
+}
+
+// ---------------------------------------------------------------------------
+// Social Media Manager + Scheduled Broadcasts (shared scheduling table)
+// ---------------------------------------------------------------------------
+
+model ScheduledContent {
+  id               String    @id @default(cuid())
+  tenantId         String
+  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kind             String // SOCIAL_POST | WHATSAPP_BROADCAST
+  channel          String // INSTAGRAM | FACEBOOK | WHATSAPP
+  postType         String? // POST | STORY | REEL — social posts only
+  caption          String?
+  mediaUrl         String?
+  targetSegment    String? // Regular | VIP | Bridal — broadcasts only, null = individual
+  targetCustomerId String? // broadcasts only, null = segment-wide
+  scheduledAt      DateTime
+  status           String    @default("scheduled") // scheduled | published | failed
+  errorMessage     String?
+  publishedAt      DateTime?
+  createdAt        DateTime  @default(now())
+
+  @@index([tenantId])
+  @@index([status, scheduledAt])
+}
+
+// Public comments on Instagram/Facebook posts, for the Social Media
+// Manager's "DMs & Comments" tab. This project has no public webhook
+// receiver, so comments here are demo-seeded rather than ingested live —
+// externalCommentId is left null until real webhook ingestion exists, at
+// which point replyToComment's live path (see integrations/instagram.ts,
+// facebook.ts) would have a real Meta comment id to reply against.
+model SocialComment {
+  id                String    @id @default(cuid())
+  tenantId          String
+  tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  channel           String // INSTAGRAM | FACEBOOK
+  externalCommentId String?
+  postCaption       String? // snippet of the post the comment is on, for display context
+  authorName        String
+  body              String
+  reply             String?
+  repliedAt         DateTime?
+  createdAt         DateTime  @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, channel])
+}
+
+// ---------------------------------------------------------------------------
+// AI Marketing Assistant
+// ---------------------------------------------------------------------------
+
+model AIGeneration {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  contentType String // Instagram Caption | Facebook Post | WhatsApp Message | Festival Wish | Product Description | SEO Title | Hashtags | Ad Copy | Best Posting Time
+  tone        String // Elegant | Playful | Traditional | Bold | Minimal
+  productName String?
+  context     String?
+  output      String
+  createdAt   DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Settings — per-tenant integration credentials
+// ---------------------------------------------------------------------------
+
+model IntegrationCredential {
+  id               String   @id @default(cuid())
+  tenantId         String
+  tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  provider         String // META | WHATSAPP
+  encryptedPayload String // AES-256-GCM encrypted JSON blob (appId, token, businessAccountId, ...)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([tenantId, provider])
+  @@index([tenantId])
+}
+
+// ---------------------------------------------------------------------------
+// Super Admin — audit trail
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  actorId        String
+  // Cascade: a permanently-deleted tenant's admin Users are cascade-deleted
+  // too (see Tenant's onDelete: Cascade relations) — their own audit trail
+  // (actions they performed) goes with them. Super Admin users are never
+  // deleted by tenant deletion, so their audit history is unaffected.
+  actor          User     @relation("AuditLogActor", fields: [actorId], references: [id], onDelete: Cascade)
+  action         String // BUSINESS_CREATED | BUSINESS_SUSPENDED | BUSINESS_REACTIVATED | BUSINESS_UPDATED | BUSINESS_SOFT_DELETED | BUSINESS_RESTORED | BUSINESS_PERMANENTLY_DELETED | CREDENTIALS_RESENT | FEATURE_ITEM_CREATED | FEATURE_ITEM_UPDATED | FEATURE_ITEM_DELETED | FEATURE_ITEM_IMPORTED | FEATURE_ITEM_SYNCED | FEATURE_CREATED | FEATURE_UPDATED | FEATURE_DELETED | INTEGRATION_CONFIG_SAVED | INTEGRATION_CONFIG_DELETED
+  // Historical rows may also contain WEBSITE_CONTENT_ACCESS_GRANTED/REVOKED
+  // (tenant-wide flag, retired in favor of per-feature permissionLevel).
+  targetTenantId String?
+  // SetNull (explicit, not changed on permanent delete): deleting a tenant
+  // detaches this row from it rather than deleting the row itself, so the
+  // audit trail (who did what, when — captured in `details` regardless)
+  // survives the tenant it was about. BUSINESS_PERMANENTLY_DELETED rows are
+  // written with targetTenantId already null, since the tenant is gone by
+  // the time they're logged.
+  targetTenant   Tenant?  @relation("AuditLogTarget", fields: [targetTenantId], references: [id], onDelete: SetNull)
+  details        String? // JSON-encoded string — see note on Product.images
+  createdAt      DateTime @default(now())
+
+  @@index([targetTenantId])
+  @@index([actorId])
+}
+
+// ---------------------------------------------------------------------------
+// Customer PII decryption audit trail
+// ---------------------------------------------------------------------------
+
+// One row per just-in-time decryption of a sensitive Customer field. Distinct
+// from AuditLog (Super Admin business-management actions, actor always a
+// User): this fires from tenant-scoped app code and background jobs, not just
+// admin actions, and actorId is nullable so system/cron-triggered decryptions
+// (e.g. birthday automation) are still recorded. If a leak is ever suspected,
+// this table is the answer to "who decrypted what customer's data, and why."
+model AccessLog {
+  id          String    @id @default(cuid())
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  // No relation-level onDelete guard needed beyond User's own cascade — a
+  // deleted user's past access events stay meaningful audit history tied to
+  // the tenant even if the actor record is gone, so this is a plain id, not
+  // a FK relation.
+  actorId     String? // User id, or null for system/cron-triggered access
+  // Nullable: a bulk action (e.g. csv_export_with_contact) touches many
+  // customers at once, not one — those rows carry recordCount instead and
+  // leave customerId/field null rather than forcing a fan-out of one row
+  // per customer/field, which would make "how many exports happened" and
+  // "how many customers were in each" harder to read than they need to be.
+  customerId  String?
+  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  field       String? // "phone" | "birthday" — null for a bulk action spanning both
+  reason      String // broadcast_send | follow_up_call | birthday_automation | manual_reveal | csv_export_with_contact | ...
+  // Set only for bulk actions (customerId/field null) — how many customers'
+  // data was included, e.g. the row count in a contact-info export.
+  recordCount Int?
+  createdAt   DateTime  @default(now())
+
+  @@index([tenantId, customerId])
+  @@index([tenantId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Connector (WebsiteIntegration) access audit trail
+// ---------------------------------------------------------------------------
+
+// The AccessLog pattern applied to the external data connector instead of
+// Customer PII: one row per credential save/replace, Test Connection call,
+// schema discovery run, sync (import and export/write-back), and any
+// server-side decrypt of a Confidential field's value for reprocessing
+// (see lib/websiteContentService.ts's decryptConfidentialFields call
+// sites). Deliberately a separate model rather than reusing AccessLog —
+// AccessLog is keyed to a Customer, this is keyed to a Feature/
+// WebsiteIntegration, and the two audiences (who touched this customer's
+// data vs. who touched this connector) don't overlap.
+model ConnectorAccessLog {
+  id                   String              @id @default(cuid())
+  tenantId             String
+  tenant               Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  // Every connector action is about a specific feature/content type.
+  featureId            String
+  feature              Feature             @relation(fields: [featureId], references: [id], onDelete: Cascade)
+  // The specific connector config row, when one still exists. SetNull (not
+  // Cascade) so deleting an integration detaches this history from it
+  // rather than deleting the audit trail itself — same reasoning as
+  // AuditLog.targetTenant.
+  websiteIntegrationId String?
+  websiteIntegration   WebsiteIntegration? @relation(fields: [websiteIntegrationId], references: [id], onDelete: SetNull)
+  // User id, or null for a system/cron-triggered action (no connector
+  // action is cron-triggered today, but sync jobs are a natural future
+  // candidate — see lib/connectorAccessLog.ts's actor-label resolution,
+  // which already renders a null actorId as "System (...)" rather than
+  // blank, same discipline as AccessLog's broadcast_send rows).
+  actorId              String?
+  action               String // CREDENTIAL_SAVED | TEST_CONNECTION | SCHEMA_DISCOVERY | SYNC_IMPORT | SYNC_EXPORT | CONFIDENTIAL_FIELD_REVEALED
+  outcome              String // success | failure
+  // JSON-encoded string — non-sensitive summary only (status codes,
+  // latency, record/field counts, truncated error text). Never a
+  // credential or a Confidential field's actual value.
+  details              String?
+  createdAt            DateTime            @default(now())
+
+  @@index([tenantId, featureId])
+  @@index([tenantId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Subscription / entitlements
+// ---------------------------------------------------------------------------
+
+// One canonical definition per subscription-gated platform module/capability
+// — deliberately a DIFFERENT vocabulary from the `Feature` model above
+// (which is website CONTENT TYPES for the Data Connector, e.g. PRODUCTS,
+// FAQS). This featureKey is platform modules for billing/entitlement
+// gating, e.g. AI_CONTENT_GENERATION, WHATSAPP_MESSAGES, WEBSITE_SYNC. Same
+// word, unrelated concept — kept in separate models/files so the two never
+// get cross-referenced by mistake. String, not a Prisma enum: SQLite has no
+// native enum type (see the file header), and the whole point of this
+// catalog is that adding a new feature key is a data row, not a migration.
+model FeatureCatalog {
+  featureKey  String  @id // e.g. AI_CONTENT_GENERATION, WHATSAPP_MESSAGES, WEBSITE_SYNC
+  category    String // AI_MARKETING | SOCIAL_MEDIA | COMMUNICATION | WEBSITE | WEBSITE_CMS | BUSINESS_DASHBOARD | ANALYTICS | TEAM_ACCESS | SUPPORT
+  displayName String
+  valueType   String // NUMERIC | BOOLEAN | TIER | TEXT — how to interpret PlanFeature.value/TenantFeatureOverride.value for this key
+  unit        String? // "/mo", "GB", "sources" — display only, never parsed
+  sortOrder   Int     @default(0)
+}
+
+model Plan {
+  id           String   @id @default(cuid())
+  name         String
+  description  String?
+  priceMonthly Float
+  priceYearly  Float
+  // "Most Popular" badge on the pricing table — display only, no other effect.
+  isFeatured   Boolean  @default(false)
+  // Deactivating blocks new signups onto this plan (enforced in the Super
+  // Admin Plans UI/route, not the schema) but never affects tenants
+  // already subscribed to it.
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  features PlanFeature[]
+  tenants  Tenant[]
+}
+
+model PlanFeature {
+  id         String   @id @default(cuid())
+  planId     String
+  plan       Plan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  featureKey String
+  // false = the ❌ cell in a pricing table. Every plan gets a row per
+  // FeatureCatalog key regardless of included, so the Plans UI always has
+  // a full, consistent toggle list per plan rather than a sparse one.
+  included   Boolean  @default(false)
+  // Interpretation depends on FeatureCatalog.valueType for this featureKey:
+  //   NUMERIC -> a bare number as a string (e.g. "500"), or "unlimited"
+  //   BOOLEAN -> ignored; `included` alone is the whole answer
+  //   TIER    -> free text (e.g. "Basic" | "Advanced" | "Enterprise") —
+  //              this catalog does not enumerate every tier value
+  //   TEXT    -> free text (e.g. "Self", "Quarterly", "2 GB")
+  // Null when not included, or when BOOLEAN (nothing to store).
+  value      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([planId, featureKey])
+}
+
+// Per-tenant override sitting ON TOP OF the tenant's plan, stored keyed to
+// (tenantId, featureKey) rather than to a specific PlanFeature row — so it
+// survives the tenant moving to a different plan later, per spec ("bump one
+// tenant's limit without a whole new plan tier, without it getting wiped if
+// the plan changes"). Null fields mean "inherit the plan's own setting",
+// non-null explicitly overrides it.
+model TenantFeatureOverride {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  featureKey String
+  included   Boolean?
+  value      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([tenantId, featureKey])
+}
+
+// Purchasable regardless of plan tier — tops up a NUMERIC entitlement
+// (relatedFeatureKey + topUpAmount) or stands alone (e.g. Custom Domain
+// Setup, Premium Template have no relatedFeatureKey/topUpAmount; they're
+// one-off purchases with no ongoing entitlement effect). Catalog entries
+// are deactivated (isActive), never hard-deleted, once purchased — see
+// TenantAddOn's onDelete: Restrict below.
+model AddOn {
+  id                String   @id @default(cuid())
+  name              String
+  description       String?
+  priceOneTime      Float?
+  priceRecurring    Float? // per month, when billingType is Recurring
+  billingType       String // OneTime | Recurring
+  // FeatureCatalog key this tops up, e.g. AI_CONTENT_GENERATION — null for
+  // add-ons with no counted-entitlement effect (Custom Domain Setup, etc).
+  relatedFeatureKey String?
+  // Quantity added per unit purchased, e.g. 1000 (messages), 10 (GB) — null
+  // for non-quantity add-ons.
+  topUpAmount       Int?
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenantAddOns TenantAddOn[]
+}
+
+model TenantAddOn {
+  id          String    @id @default(cuid())
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  addOnId     String
+  // Restrict, not Cascade: an AddOn catalog entry that's ever been
+  // purchased can't be hard-deleted (deactivate via AddOn.isActive
+  // instead) — this is a billing/purchase record, not disposable config.
+  addOn       AddOn     @relation(fields: [addOnId], references: [id], onDelete: Restrict)
+  quantity    Int       @default(1)
+  status      String // Active | Cancelled | Expired
+  purchasedAt DateTime  @default(now())
+  renewsAt    DateTime? // set for Recurring add-ons; null for OneTime
+
+  @@index([tenantId, status])
+}
+
+// A lightweight request/quote queue for work that's inherently variable-
+// priced ("starts at ₹X", hourly) and doesn't fit the fixed-price
+// Plan/AddOn model — not automated billing, just a tracked conversation
+// between a tenant and the platform.
+model CustomDevelopmentRequest {
+  id           String   @id @default(cuid())
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  serviceType  String // UI_CHANGE | NEW_MODULE | CUSTOM_WORKFLOW | API_INTEGRATION | SCHEMA_CHANGE | CUSTOM_FEATURE | ENTERPRISE_CUSTOM
+  description  String
+  status       String   @default("Requested") // Requested | Quoted | Approved | InProgress | Completed | Invoiced | Cancelled
+  quotedAmount Float?
+  notes        String?
+  // User id, no FK relation — same reasoning as AccessLog.actorId: a
+  // request stays meaningful history even if the requesting user is later
+  // deleted.
+  requestedBy  String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([tenantId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Entitlement enforcement — monthly usage counters
+// ---------------------------------------------------------------------------
+
+// Only for NUMERIC features with a "/mo" unit (AI_CONTENT_GENERATION,
+// WHATSAPP_MESSAGES, SCHEDULED_POSTS) — a consumption count that resets
+// each calendar month. NUMERIC features with an "items"/"accounts"/"GB"
+// unit (e.g. CMS_PRODUCTS) are standing caps, not monthly consumption, and
+// are enforced by counting the live rows they cap directly — no counter
+// row needed for those. periodStart is always the first of the month at
+// UTC midnight, so lookups don't depend on server-local timezone.
+model UsageCounter {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  featureKey  String
+  periodStart DateTime
+  count       Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, featureKey, periodStart])
+  @@index([tenantId, featureKey])
+}
