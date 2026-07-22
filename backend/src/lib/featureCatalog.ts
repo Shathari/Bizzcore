@@ -5,9 +5,20 @@ import { prisma } from "./prisma";
 // custom features created via the Feature Catalog reuse the same
 // rendering code, no new types needed for "unlimited custom features".
 export type FieldDef =
-  | { key: string; label: string; type: "text" | "textarea" | "number" | "date" | "image"; required?: boolean }
+  | { key: string; label: string; type: "text" | "textarea" | "number" | "date" | "image" | "list"; required?: boolean }
   | { key: string; label: string; type: "select"; required?: boolean; options: string[] }
-  | { key: string; label: string; type: "checkbox" };
+  | { key: string; label: string; type: "checkbox" }
+  // Array of objects with a fixed set of sub-fields (e.g. coreValues:
+  // [{title, description}]) — the shape "list" (array of plain strings)
+  // can't express. itemFields are always simple text/textarea sub-fields;
+  // no nesting of another repeater/select inside one.
+  | {
+      key: string;
+      label: string;
+      type: "repeater";
+      required?: boolean;
+      itemFields: { key: string; label: string; type?: "text" | "textarea" }[];
+    };
 
 export type FeatureDefinition = {
   id: string;

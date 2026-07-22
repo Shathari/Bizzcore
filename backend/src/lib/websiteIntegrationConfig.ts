@@ -10,6 +10,7 @@ import {
 } from "./websiteApiClient";
 import { listFeatures, getFeatureByKey, type FieldDef } from "./featureCatalog";
 import { logConnectorAccess } from "./connectorAccessLog";
+import { resolveDataSource } from "./connectorLogin";
 
 // Tenant-Admin-owned: configures, per tenant and per feature (built-in or
 // custom — see lib/featureCatalog.ts), the external website API a
@@ -264,8 +265,15 @@ export async function saveIntegration(
 
   const existing = await prisma.websiteIntegration.findUnique({
     where: { tenantId_featureId: { tenantId, featureId: feature.id } },
-    include: { endpoints: true },
+    include: { endpoints: true, dataSource: true },
   });
+
+  // Every feature's baseUrl resolves to a shared DataSource (one per
+  // tenant+origin — see connectorLogin.ts) regardless of this save's
+  // authType, so relinking self-heals if baseUrl's host ever changes, and
+  // a feature can switch INTO "login" mode later at zero cost if a sibling
+  // feature on the same site already has a working login.
+  const dataSource = await resolveDataSource(tenantId, baseUrl);
 
   // confidentialWriteEnabled is meant to be a second, explicit confirmation
   // ON TOP OF a field already being marked Confidential — never a way to
@@ -320,7 +328,7 @@ export async function saveIntegration(
   if (authType !== "none" && authType !== "login" && !encryptedCredentials) {
     return { ok: false, error: "Credentials are required for this auth type" };
   }
-  if (authType === "login" && !existing?.loginUrl) {
+  if (authType === "login" && !dataSource.loginUrl) {
     return { ok: false, error: 'Use the "Log in with admin credentials" action to set up login-based authentication.' };
   }
 
@@ -371,6 +379,7 @@ export async function saveIntegration(
         baseUrl,
         authType,
         encryptedCredentials,
+        dataSourceId: dataSource.id,
         active: active ?? true,
         permissionLevel: permissionLevel ?? "VIEW",
         fieldMapping: fieldMappingJson ?? null,
@@ -383,6 +392,7 @@ export async function saveIntegration(
         baseUrl,
         authType,
         encryptedCredentials,
+        dataSourceId: dataSource.id,
         active: active ?? existing?.active ?? true,
         permissionLevel: permissionLevel ?? existing?.permissionLevel ?? "VIEW",
         fieldMapping: fieldMappingJson !== undefined ? fieldMappingJson : existing?.fieldMapping,

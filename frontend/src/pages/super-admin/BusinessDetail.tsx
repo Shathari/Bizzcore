@@ -89,7 +89,7 @@ export default function BusinessDetail() {
       await load();
       showToast(`${detail.tenant.businessName} ${nextStatus === "Suspended" ? "suspended" : "reactivated"}`);
     } catch {
-      showToast("Could not update status.");
+      showToast("Could not update status.", "error");
     } finally {
       setBusy(false);
     }
@@ -104,7 +104,7 @@ export default function BusinessDetail() {
       await load();
       showToast("Credentials resent");
     } catch {
-      showToast("Could not resend credentials.");
+      showToast("Could not resend credentials.", "error");
     } finally {
       setBusy(false);
     }
@@ -118,7 +118,7 @@ export default function BusinessDetail() {
       await load();
       showToast(`${detail.tenant.businessName} restored`);
     } catch {
-      showToast("Could not restore business.");
+      showToast("Could not restore business.", "error");
     } finally {
       setBusy(false);
     }

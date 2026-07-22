@@ -11,35 +11,63 @@ import { getFeatureByKey } from "./featureCatalog";
 // login endpoint, not a way to mint a long-lived token by hand. The tenant
 // Admin gives us THEIR site's login URL + their own login email/password
 // (never a BizzCore credential); we log in on their behalf and keep the
-// resulting access token (and the password itself, encrypted) so it can be
-// refreshed again later without asking the tenant to re-enter anything —
-// see buildCredentialRefresher below for the automatic-on-401 path, and
-// manualRefreshToken for the "Get / Refresh Access Token" button.
+// resulting access token (and the password itself, encrypted).
+//
+// The login itself belongs to the connected WEBSITE (DataSource), not to
+// any one Feature on it — confirmed directly against a real tenant site:
+// one /api/auth/login for the whole API, checked by every protected route.
+// Originally each Feature's WebsiteIntegration stored its own independent
+// copy of loginUrl/credentials/token, which let two features on the exact
+// same site end up with two separately-wrong login URLs (exactly what
+// happened in practice). Now every WebsiteIntegration just links to a
+// shared DataSource (found/created by tenantId + baseUrl's origin — see
+// resolveDataSource) and reads/refreshes ONE token there; log in once for
+// a site, every feature on it benefits immediately.
 
 // ---------------------------------------------------------------------------
-// Per-integration login-attempt rate limiting
+// Per-DataSource login-attempt rate limiting
 // ---------------------------------------------------------------------------
-// In-memory, keyed by WebsiteIntegration.id (inherently tenant-scoped — one
-// id belongs to exactly one tenant's one connector, so this can never leak
-// across tenants). Deliberately NOT express-rate-limit, since this needs to
-// gate the automatic 401-triggered re-login too, which doesn't originate
-// from a fresh incoming HTTP request. Caps how often we'll hit the
-// TENANT'S OWN login endpoint with a password that might now be wrong —
-// protects their site from being hammered by a stuck retry loop, not ours.
+// In-memory, keyed by DataSource.id (inherently tenant-scoped — one id
+// belongs to exactly one tenant's one connected site, so this can never
+// leak across tenants). Deliberately NOT express-rate-limit, since this
+// needs to gate the automatic 401-triggered re-login too, which doesn't
+// originate from a fresh incoming HTTP request. Caps how often we'll hit
+// the TENANT'S OWN login endpoint with a password that might now be wrong
+// — protects their site from being hammered, regardless of how many
+// features happen to share this DataSource and might all trigger a
+// refresh around the same time.
 const LOGIN_WINDOW_MS = 60_000;
 const LOGIN_MAX_ATTEMPTS_PER_WINDOW = 5;
 const loginAttempts = new Map<string, number[]>();
 
-export function checkLoginRateLimit(integrationId: string): boolean {
+export function checkLoginRateLimit(dataSourceId: string): boolean {
   const now = Date.now();
-  const recent = (loginAttempts.get(integrationId) ?? []).filter((t) => now - t < LOGIN_WINDOW_MS);
+  const recent = (loginAttempts.get(dataSourceId) ?? []).filter((t) => now - t < LOGIN_WINDOW_MS);
   if (recent.length >= LOGIN_MAX_ATTEMPTS_PER_WINDOW) {
-    loginAttempts.set(integrationId, recent);
+    loginAttempts.set(dataSourceId, recent);
     return false;
   }
   recent.push(now);
-  loginAttempts.set(integrationId, recent);
+  loginAttempts.set(dataSourceId, recent);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Resolving the shared DataSource for a feature's baseUrl
+// ---------------------------------------------------------------------------
+
+// Find-or-create the DataSource for this tenant + this baseUrl's origin
+// (scheme+host, no path) — the single grouping key every feature on the
+// same external site converges on. Called on every login-related save so a
+// feature whose baseUrl changes to a different site is never left pointing
+// at a stale DataSource.
+export async function resolveDataSource(tenantId: string, baseUrl: string) {
+  const origin = new URL(baseUrl).origin;
+  return prisma.dataSource.upsert({
+    where: { tenantId_origin: { tenantId, origin } },
+    create: { tenantId, origin },
+    update: {},
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +193,8 @@ export async function performExternalLogin(loginUrl: string, email: string, pass
 }
 
 // ---------------------------------------------------------------------------
-// Save (initial login-mode setup)
+// Save (initial login-mode setup) — invoked from any ONE feature on a site,
+// but writes to (and benefits) every feature sharing that site's DataSource.
 // ---------------------------------------------------------------------------
 
 // Same "TLS-only" rule as the rest of the connector subsystem, with one
@@ -199,11 +228,16 @@ export const saveLoginCredentialsSchema = z.object({
 
 export type SaveLoginResult = { ok: true; tokenExpiresAt: Date | null } | { ok: false; error: string };
 
-// Persists loginUrl + encrypted email/password regardless of whether the
-// immediate login attempt succeeds — a failed first attempt (typo'd
-// password, wrong URL) shouldn't force the tenant Admin to re-enter
-// everything to try again via "Refresh"; it should just show as
-// CredentialsExpired until they fix it.
+// Persists loginUrl + encrypted email/password on the shared DataSource
+// regardless of whether the immediate login attempt succeeds — a failed
+// first attempt (typo'd password, wrong URL) shouldn't force the tenant
+// Admin to re-enter everything to try again via "Refresh"; it should just
+// show as CredentialsExpired until they fix it. Also flips THIS feature's
+// own authType to "login" and links it to the DataSource — a sibling
+// feature on the same site is untouched by this call (it opts in to
+// sharing this DataSource's login the same way, separately, but needs no
+// login URL/credentials of its own once it does — the DataSource already
+// has them).
 export async function saveLoginCredentials(
   tenantId: string,
   featureKey: string,
@@ -221,22 +255,27 @@ export async function saveLoginCredentials(
     return { ok: false, error: "Set up this connector's base URL first, then configure login-based credentials." };
   }
 
+  const dataSource = await resolveDataSource(tenantId, integration.baseUrl);
   const loginResult = await performExternalLogin(parsed.data.loginUrl, parsed.data.email, parsed.data.password);
 
-  await prisma.websiteIntegration.update({
-    where: { id: integration.id },
-    data: {
-      authType: "login",
-      encryptedCredentials: null,
-      loginUrl: parsed.data.loginUrl,
-      loginEmailEncrypted: encrypt(parsed.data.email),
-      loginPasswordEncrypted: encrypt(parsed.data.password),
-      accessTokenEncrypted: loginResult.ok ? encrypt(loginResult.accessToken) : integration.accessTokenEncrypted,
-      refreshTokenEncrypted: loginResult.ok ? (loginResult.refreshToken ? encrypt(loginResult.refreshToken) : null) : integration.refreshTokenEncrypted,
-      tokenExpiresAt: loginResult.ok ? loginResult.expiresAt : integration.tokenExpiresAt,
-      credentialStatus: loginResult.ok ? "OK" : "CredentialsExpired",
-    },
-  });
+  await prisma.$transaction([
+    prisma.dataSource.update({
+      where: { id: dataSource.id },
+      data: {
+        loginUrl: parsed.data.loginUrl,
+        loginEmailEncrypted: encrypt(parsed.data.email),
+        loginPasswordEncrypted: encrypt(parsed.data.password),
+        accessTokenEncrypted: loginResult.ok ? encrypt(loginResult.accessToken) : dataSource.accessTokenEncrypted,
+        refreshTokenEncrypted: loginResult.ok ? (loginResult.refreshToken ? encrypt(loginResult.refreshToken) : null) : dataSource.refreshTokenEncrypted,
+        tokenExpiresAt: loginResult.ok ? loginResult.expiresAt : dataSource.tokenExpiresAt,
+        credentialStatus: loginResult.ok ? "OK" : "CredentialsExpired",
+      },
+    }),
+    prisma.websiteIntegration.update({
+      where: { id: integration.id },
+      data: { authType: "login", encryptedCredentials: null, dataSourceId: dataSource.id },
+    }),
+  ]);
 
   await logConnectorAccess({
     tenantId,
@@ -266,13 +305,14 @@ export async function manualRefreshToken(tenantId: string, featureKey: string, a
   const feature = await getFeatureByKey(tenantId, featureKey);
   if (!feature) return { ok: false, error: "Unknown content type" };
 
-  const integration = await prisma.websiteIntegration.findUnique({ where: { tenantId_featureId: { tenantId, featureId: feature.id } } });
+  const integration = await prisma.websiteIntegration.findUnique({ where: { tenantId_featureId: { tenantId, featureId: feature.id } }, include: { dataSource: true } });
   if (!integration) return { ok: false, error: "Not found" };
-  if (integration.authType !== "login" || !integration.loginUrl || !integration.loginEmailEncrypted || !integration.loginPasswordEncrypted) {
+  const dataSource = integration.dataSource;
+  if (integration.authType !== "login" || !dataSource?.loginUrl || !dataSource.loginEmailEncrypted || !dataSource.loginPasswordEncrypted) {
     return { ok: false, error: "This connector isn't using login-based credentials." };
   }
 
-  if (!checkLoginRateLimit(integration.id)) {
+  if (!checkLoginRateLimit(dataSource.id)) {
     await logConnectorAccess({
       tenantId,
       featureId: feature.id,
@@ -285,12 +325,12 @@ export async function manualRefreshToken(tenantId: string, featureKey: string, a
     return { ok: false, error: "Too many login attempts — please wait a minute and try again.", rateLimited: true };
   }
 
-  const email = decrypt(integration.loginEmailEncrypted);
-  const password = decrypt(integration.loginPasswordEncrypted);
-  const result = await performExternalLogin(integration.loginUrl, email, password);
+  const email = decrypt(dataSource.loginEmailEncrypted);
+  const password = decrypt(dataSource.loginPasswordEncrypted);
+  const result = await performExternalLogin(dataSource.loginUrl, email, password);
 
   if (!result.ok) {
-    await prisma.websiteIntegration.update({ where: { id: integration.id }, data: { credentialStatus: "CredentialsExpired" } });
+    await prisma.dataSource.update({ where: { id: dataSource.id }, data: { credentialStatus: "CredentialsExpired" } });
     await logConnectorAccess({
       tenantId,
       featureId: feature.id,
@@ -303,8 +343,8 @@ export async function manualRefreshToken(tenantId: string, featureKey: string, a
     return { ok: false, error: result.error };
   }
 
-  await prisma.websiteIntegration.update({
-    where: { id: integration.id },
+  await prisma.dataSource.update({
+    where: { id: dataSource.id },
     data: {
       accessTokenEncrypted: encrypt(result.accessToken),
       refreshTokenEncrypted: result.refreshToken ? encrypt(result.refreshToken) : null,
@@ -326,33 +366,25 @@ export async function manualRefreshToken(tenantId: string, featureKey: string, a
 
 // ---------------------------------------------------------------------------
 // Automatic 401-triggered re-login (see websiteApiClient.ts's
-// CredentialRefresher — this is what builds the callback it invokes)
+// CredentialRefresher — this is what builds the callback it invokes) and
+// proactive refresh (checked before a call is even attempted)
 // ---------------------------------------------------------------------------
+
+export type LoginCapableDataSource = {
+  id: string;
+  loginUrl: string | null;
+  loginEmailEncrypted: string | null;
+  loginPasswordEncrypted: string | null;
+  accessTokenEncrypted: string | null;
+  tokenExpiresAt: Date | null;
+  credentialStatus: string;
+};
 
 type LoginCapableIntegration = {
   id: string;
   featureId: string;
   authType: string;
-  loginUrl: string | null;
-  loginEmailEncrypted: string | null;
-  loginPasswordEncrypted: string | null;
-};
-
-// ---------------------------------------------------------------------------
-// Proactive refresh — checked BEFORE a call is even attempted, not just
-// reactively after a 401 (see buildCredentialRefresher below for that
-// safety net, which still matters: not every login response tells us an
-// expiry, and a token can go bad for reasons other than time). A token
-// like the 15-minute one that motivated this feature would otherwise cost
-// every write/import a guaranteed-failing first attempt before the 401
-// handler kicked in — this skips straight to a working token when we
-// already know the old one is stale.
-// ---------------------------------------------------------------------------
-
-type ExpiryAwareIntegration = LoginCapableIntegration & {
-  tokenExpiresAt: Date | null;
-  accessTokenEncrypted: string | null;
-  credentialStatus: string;
+  dataSource: LoginCapableDataSource | null;
 };
 
 // Treated as "already expired" a little early — refreshing at T-30s instead
@@ -360,30 +392,34 @@ type ExpiryAwareIntegration = LoginCapableIntegration & {
 // just after it.
 const EXPIRY_BUFFER_MS = 30_000;
 
-// Returns the SAME integration object when no proactive refresh was
-// needed or possible (nothing to change), or a shallow copy with the new
-// accessTokenEncrypted/tokenExpiresAt/credentialStatus when one succeeded.
-// Callers should use the RETURNED value to build headers/refreshers for
-// the call they're about to make — a proactive refresh failure is not
-// itself an error to surface (the reactive 401 path below, and the
-// rate limiter both of them share, still cover it if the actual call also
-// fails).
-export async function ensureFreshToken<T extends ExpiryAwareIntegration>(integration: T, tenantId: string, actorId: string | null): Promise<T> {
-  if (integration.authType !== "login" || !integration.tokenExpiresAt) return integration;
-  if (integration.tokenExpiresAt.getTime() - EXPIRY_BUFFER_MS > Date.now()) return integration; // still comfortably valid
-  if (!integration.loginUrl || !integration.loginEmailEncrypted || !integration.loginPasswordEncrypted) return integration;
+// Returns the SAME integration object when no proactive refresh was needed
+// or possible (nothing to change), or a shallow copy with the DataSource's
+// accessTokenEncrypted/tokenExpiresAt/credentialStatus updated when one
+// succeeded. Callers should use the RETURNED value to build headers/
+// refreshers for the call they're about to make. A proactive refresh
+// failure is not itself an error to surface (the reactive 401 path below,
+// and the rate limiter both of them share, still cover it if the actual
+// call also fails). Since the token lives on the shared DataSource, a
+// refresh triggered by ANY feature's call updates it for every other
+// feature sharing that DataSource too — the next one to check simply sees
+// an already-fresh token and does nothing.
+export async function ensureFreshToken<T extends LoginCapableIntegration>(integration: T, tenantId: string, actorId: string | null): Promise<T> {
+  const dataSource = integration.dataSource;
+  if (integration.authType !== "login" || !dataSource?.tokenExpiresAt) return integration;
+  if (dataSource.tokenExpiresAt.getTime() - EXPIRY_BUFFER_MS > Date.now()) return integration; // still comfortably valid
+  if (!dataSource.loginUrl || !dataSource.loginEmailEncrypted || !dataSource.loginPasswordEncrypted) return integration;
 
-  if (!checkLoginRateLimit(integration.id)) {
-    logger.warn({ websiteIntegrationId: integration.id, tenantId }, "connector login: proactive refresh skipped — rate limited");
+  if (!checkLoginRateLimit(dataSource.id)) {
+    logger.warn({ dataSourceId: dataSource.id, tenantId }, "connector login: proactive refresh skipped — rate limited");
     return integration;
   }
 
-  const email = decrypt(integration.loginEmailEncrypted);
-  const password = decrypt(integration.loginPasswordEncrypted);
-  const result = await performExternalLogin(integration.loginUrl, email, password);
+  const email = decrypt(dataSource.loginEmailEncrypted);
+  const password = decrypt(dataSource.loginPasswordEncrypted);
+  const result = await performExternalLogin(dataSource.loginUrl, email, password);
 
   if (!result.ok) {
-    await prisma.websiteIntegration.update({ where: { id: integration.id }, data: { credentialStatus: "CredentialsExpired" } });
+    await prisma.dataSource.update({ where: { id: dataSource.id }, data: { credentialStatus: "CredentialsExpired" } });
     await logConnectorAccess({
       tenantId,
       featureId: integration.featureId,
@@ -397,8 +433,8 @@ export async function ensureFreshToken<T extends ExpiryAwareIntegration>(integra
   }
 
   const accessTokenEncrypted = encrypt(result.accessToken);
-  await prisma.websiteIntegration.update({
-    where: { id: integration.id },
+  await prisma.dataSource.update({
+    where: { id: dataSource.id },
     data: {
       accessTokenEncrypted,
       refreshTokenEncrypted: result.refreshToken ? encrypt(result.refreshToken) : null,
@@ -416,25 +452,26 @@ export async function ensureFreshToken<T extends ExpiryAwareIntegration>(integra
     details: { trigger: "proactive_expiry" },
   });
 
-  return { ...integration, accessTokenEncrypted, tokenExpiresAt: result.expiresAt, credentialStatus: "OK" };
+  return { ...integration, dataSource: { ...dataSource, accessTokenEncrypted, tokenExpiresAt: result.expiresAt, credentialStatus: "OK" } };
 }
 
-// Returns undefined when this integration has no stored login credentials
-// to retry with (authType isn't "login", or the fields aren't all set) —
-// callers treat "no refresher" as "just mark CredentialsExpired, nothing
-// to retry."
+// Returns undefined when this integration has no shared DataSource login to
+// retry with (authType isn't "login", or the DataSource's fields aren't all
+// set) — callers treat "no refresher" as "just mark CredentialsExpired,
+// nothing to retry."
 export function buildCredentialRefresher(
   integration: LoginCapableIntegration,
   tenantId: string,
   actorId: string | null
 ): CredentialRefresher | undefined {
-  if (integration.authType !== "login" || !integration.loginUrl || !integration.loginEmailEncrypted || !integration.loginPasswordEncrypted) {
+  const dataSource = integration.dataSource;
+  if (integration.authType !== "login" || !dataSource?.loginUrl || !dataSource.loginEmailEncrypted || !dataSource.loginPasswordEncrypted) {
     return undefined;
   }
 
   return async () => {
-    if (!checkLoginRateLimit(integration.id)) {
-      logger.warn({ websiteIntegrationId: integration.id, tenantId }, "connector login: automatic re-login skipped — rate limited");
+    if (!checkLoginRateLimit(dataSource.id)) {
+      logger.warn({ dataSourceId: dataSource.id, tenantId }, "connector login: automatic re-login skipped — rate limited");
       await logConnectorAccess({
         tenantId,
         featureId: integration.featureId,
@@ -447,12 +484,12 @@ export function buildCredentialRefresher(
       return { refreshed: false };
     }
 
-    const email = decrypt(integration.loginEmailEncrypted!);
-    const password = decrypt(integration.loginPasswordEncrypted!);
-    const result = await performExternalLogin(integration.loginUrl!, email, password);
+    const email = decrypt(dataSource.loginEmailEncrypted!);
+    const password = decrypt(dataSource.loginPasswordEncrypted!);
+    const result = await performExternalLogin(dataSource.loginUrl!, email, password);
 
     if (!result.ok) {
-      await prisma.websiteIntegration.update({ where: { id: integration.id }, data: { credentialStatus: "CredentialsExpired" } });
+      await prisma.dataSource.update({ where: { id: dataSource.id }, data: { credentialStatus: "CredentialsExpired" } });
       await logConnectorAccess({
         tenantId,
         featureId: integration.featureId,
@@ -465,8 +502,8 @@ export function buildCredentialRefresher(
       return { refreshed: false };
     }
 
-    await prisma.websiteIntegration.update({
-      where: { id: integration.id },
+    await prisma.dataSource.update({
+      where: { id: dataSource.id },
       data: {
         accessTokenEncrypted: encrypt(result.accessToken),
         refreshTokenEncrypted: result.refreshToken ? encrypt(result.refreshToken) : null,
@@ -490,13 +527,32 @@ export function buildCredentialRefresher(
 // ---------------------------------------------------------------------------
 // credentialStatus reconciliation — called by lib/websiteContentService.ts
 // after every write-back/import attempt with whatever HTTP status the
-// FINAL (post any auto-refresh-and-retry) response carried.
+// FINAL (post any auto-refresh-and-retry) response carried. For a "login"
+// integration this reconciles the SHARED DataSource's status (meaningful
+// for every feature on it); otherwise it's this one feature's own status
+// (a static bearer/apiKey/etc. token going stale is still a per-feature
+// concern, since it was never shared to begin with).
 // ---------------------------------------------------------------------------
 
-export async function reconcileCredentialStatus(integrationId: string, currentStatus: string, responseStatus: number | undefined): Promise<void> {
+export async function reconcileCredentialStatus(
+  integration: { id: string; authType: string; credentialStatus: string; dataSource: { id: string; credentialStatus: string } | null },
+  responseStatus: number | undefined
+): Promise<void> {
+  const useDataSource = integration.authType === "login" && integration.dataSource;
+  const targetId = useDataSource ? integration.dataSource!.id : integration.id;
+  const currentStatus = useDataSource ? integration.dataSource!.credentialStatus : integration.credentialStatus;
+
   if (responseStatus === 401 && currentStatus !== "CredentialsExpired") {
-    await prisma.websiteIntegration.update({ where: { id: integrationId }, data: { credentialStatus: "CredentialsExpired" } });
+    if (useDataSource) {
+      await prisma.dataSource.update({ where: { id: targetId }, data: { credentialStatus: "CredentialsExpired" } });
+    } else {
+      await prisma.websiteIntegration.update({ where: { id: targetId }, data: { credentialStatus: "CredentialsExpired" } });
+    }
   } else if (responseStatus !== undefined && responseStatus < 400 && currentStatus !== "OK") {
-    await prisma.websiteIntegration.update({ where: { id: integrationId }, data: { credentialStatus: "OK" } });
+    if (useDataSource) {
+      await prisma.dataSource.update({ where: { id: targetId }, data: { credentialStatus: "OK" } });
+    } else {
+      await prisma.websiteIntegration.update({ where: { id: targetId }, data: { credentialStatus: "OK" } });
+    }
   }
 }

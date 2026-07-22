@@ -20,6 +20,26 @@ export async function getConnectorLoginStatus(contentType: string): Promise<Conn
   return data;
 }
 
+// One login per connected website (DataSource), shared by every feature on
+// it — not one per feature. A write action (save/refresh) is still issued
+// against any one of a DataSource's `features` (see saveConnectorLogin/
+// refreshConnectorToken above) since they all resolve to the same
+// DataSource server-side; which feature key is used is just a routing
+// detail.
+export type ConnectorDataSource = {
+  id: string;
+  origin: string;
+  loginConfigured: boolean;
+  credentialStatus: CredentialStatus;
+  tokenExpiresAt: string | null;
+  features: { key: string; label: string; usingLogin: boolean }[];
+};
+
+export async function listConnectorDataSources(): Promise<ConnectorDataSource[]> {
+  const { data } = await apiClient.get<ConnectorDataSource[]>("/connector-login/data-sources");
+  return data;
+}
+
 export async function saveConnectorLogin(
   contentType: string,
   input: { loginUrl: string; email: string; password: string }

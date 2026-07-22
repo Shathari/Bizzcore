@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import axios from "axios";
-import { Trash2, Pencil, Upload, Download, SlidersHorizontal, RefreshCw, Search, ChevronLeft, ChevronRight } from "lucide-react";
+import { Trash2, Pencil, Upload, Download, SlidersHorizontal, RefreshCw, Search, ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import type { ModuleInfo, FieldDef, WebsiteContentImportFilters, WebsiteContentItem } from "../../api/superAdminWebsite";
 import { useToast } from "../../components/Toast";
 import { Button } from "../../components/Button";
@@ -93,7 +93,7 @@ function ImportButton({ api, onImported, disabled }: { api: WebsiteContentApi; o
       setFiltersOpen(false);
       onImported();
     } catch (err) {
-      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Import failed.") : "Import failed.");
+      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Import failed.") : "Import failed.", "error");
     } finally {
       setImporting(false);
     }
@@ -106,7 +106,7 @@ function ImportButton({ api, onImported, disabled }: { api: WebsiteContentApi; o
       showToast(`Synced: ${res.retried} retried, ${res.imported} imported from your website.`);
       onImported();
     } catch (err) {
-      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Sync failed.") : "Sync failed.");
+      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Sync failed.") : "Sync failed.", "error");
     } finally {
       setSyncing(false);
     }
@@ -243,7 +243,7 @@ function ListContentTab({
     try {
       setResult(await api.list(options ?? { search: search || undefined, page }));
     } catch {
-      showToast(`Could not load ${module.label.toLowerCase()}.`);
+      showToast(`Could not load ${module.label.toLowerCase()}.`, "error");
     }
   }
 
@@ -294,11 +294,11 @@ function ListContentTab({
     } catch (err) {
       const saved = extractSavedItem(err);
       if (saved) {
-        showToast("Deleted locally, but the external site couldn't be reached — will need a retry.");
+        showToast("Deleted locally, but the external site couldn't be reached — will need a retry.", "error");
         setDeleteTarget(null);
         load();
       } else {
-        showToast("Could not delete.");
+        showToast("Could not delete.", "error");
       }
     } finally {
       setDeleting(false);
@@ -449,6 +449,12 @@ function renderCellValue(field: FieldDef, value: unknown) {
   if (field.type === "image") {
     return value ? <img src={String(value)} alt="" className="h-10 w-10 rounded-lg object-cover" /> : "—";
   }
+  if (field.type === "list") {
+    return Array.isArray(value) && value.length > 0 ? value.join(", ") : "—";
+  }
+  if (field.type === "repeater") {
+    return Array.isArray(value) && value.length > 0 ? `${value.length} item${value.length === 1 ? "" : "s"}` : "—";
+  }
   if (field.type === "checkbox") {
     return (
       <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${value ? "bg-emerald-100 text-emerald-700" : "bg-neutral-100 text-neutral-500"}`}>
@@ -483,7 +489,7 @@ function FieldInputs({
       const url = await api.uploadImage(file);
       onChange(key, url);
     } catch {
-      showToast("Could not upload image.");
+      showToast("Could not upload image.", "error");
     } finally {
       setUploadingKey(null);
     }
@@ -509,6 +515,22 @@ function FieldInputs({
               className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
             />
           )}
+
+          {f.type === "list" && (
+            <>
+              <textarea
+                required={f.required}
+                value={values[f.key] ?? ""}
+                onChange={(e) => onChange(f.key, e.target.value)}
+                rows={4}
+                placeholder="One item per line"
+                className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+              />
+              <p className="mt-1 text-xs text-neutral-400">One item per line — sent as a list.</p>
+            </>
+          )}
+
+          {f.type === "repeater" && <RepeaterFieldInput field={f} value={values[f.key] ?? "[]"} onChange={(v) => onChange(f.key, v)} />}
 
           {f.type === "select" && (
             <select
@@ -573,6 +595,84 @@ function FieldInputs({
   );
 }
 
+// Array-of-objects editor for a "repeater" field (e.g. coreValues:
+// [{title, description}]) — the dashboard's `values` map is Record<string,
+// string> everywhere, so the array is kept JSON-stringified in that same
+// slot and parsed/re-stringified here, same convention "list" uses with
+// newline-joined text.
+function RepeaterFieldInput({
+  field,
+  value,
+  onChange,
+}: {
+  field: Extract<FieldDef, { type: "repeater" }>;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  let items: Record<string, string>[];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    items = Array.isArray(parsed) ? parsed : [];
+  } catch {
+    items = [];
+  }
+
+  function updateItem(index: number, key: string, itemValue: string) {
+    onChange(JSON.stringify(items.map((item, i) => (i === index ? { ...item, [key]: itemValue } : item))));
+  }
+  function addItem() {
+    const blank = Object.fromEntries(field.itemFields.map((sf) => [sf.key, ""]));
+    onChange(JSON.stringify([...items, blank]));
+  }
+  function removeItem(index: number) {
+    onChange(JSON.stringify(items.filter((_, i) => i !== index)));
+  }
+
+  return (
+    <div className="mt-1 space-y-3">
+      {items.map((item, index) => (
+        <div key={index} className="space-y-2 rounded-xl border border-neutral-200 p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-neutral-400">
+              {field.label.replace(/s$/, "")} {index + 1}
+            </span>
+            <button type="button" onClick={() => removeItem(index)} aria-label="Remove" className="text-neutral-400 hover:text-red-600">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          {field.itemFields.map((sf) => (
+            <div key={sf.key}>
+              <label className="block text-xs font-medium text-neutral-500">{sf.label}</label>
+              {sf.type === "textarea" ? (
+                <textarea
+                  value={item[sf.key] ?? ""}
+                  onChange={(e) => updateItem(index, sf.key, e.target.value)}
+                  rows={2}
+                  className="mt-0.5 w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+                />
+              ) : (
+                <input
+                  type="text"
+                  value={item[sf.key] ?? ""}
+                  onChange={(e) => updateItem(index, sf.key, e.target.value)}
+                  className="mt-0.5 w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      ))}
+      <button
+        type="button"
+        onClick={addItem}
+        className="flex items-center gap-1 rounded-lg border border-neutral-300 px-2.5 py-1.5 text-xs font-semibold text-neutral-600 hover:bg-neutral-50"
+      >
+        <Plus className="h-3.5 w-3.5" /> Add {field.label.replace(/s$/, "")}
+      </button>
+    </div>
+  );
+}
+
 function buildPayload(fields: FieldDef[], values: Record<string, string>): Record<string, unknown> {
   const payload: Record<string, unknown> = {};
   for (const f of fields) {
@@ -581,6 +681,26 @@ function buildPayload(fields: FieldDef[], values: Record<string, string>): Recor
       payload[f.key] = raw === "true";
     } else if (f.type === "number") {
       payload[f.key] = raw === "" ? undefined : Number(raw);
+    } else if (f.type === "list") {
+      // One line per item — matches FieldInputs' textarea convention above.
+      // Sent as [] rather than omitted when empty, since an external API
+      // expecting an array field (e.g. "no core values yet") generally
+      // means an empty list, not a missing key.
+      payload[f.key] = raw
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+    } else if (f.type === "repeater") {
+      // RepeaterFieldInput keeps the array JSON-stringified in this same
+      // string slot — parse it back to a real array of objects for the
+      // outbound payload. Rows with every sub-field blank are dropped
+      // rather than sent as empty objects.
+      try {
+        const parsed: unknown = JSON.parse(raw || "[]");
+        payload[f.key] = Array.isArray(parsed) ? parsed.filter((item) => Object.values(item as Record<string, unknown>).some((v) => String(v ?? "").trim())) : [];
+      } catch {
+        payload[f.key] = [];
+      }
     } else {
       payload[f.key] = raw || undefined;
     }
@@ -593,6 +713,8 @@ function valuesFromPayload(fields: FieldDef[], payload: Record<string, unknown> 
     fields.map((f) => {
       const raw = payload?.[f.key];
       if (f.type === "checkbox") return [f.key, raw ? "true" : ""];
+      if (f.type === "list") return [f.key, Array.isArray(raw) ? raw.join("\n") : raw != null ? String(raw) : ""];
+      if (f.type === "repeater") return [f.key, Array.isArray(raw) ? JSON.stringify(raw) : "[]"];
       return [f.key, raw != null ? String(raw) : ""];
     })
   );
@@ -633,7 +755,7 @@ function GenericContentModal({
     } catch (err) {
       const saved = extractSavedItem(err);
       if (saved) {
-        showToast("Saved locally, but the external site couldn't be reached — will need a retry.");
+        showToast("Saved locally, but the external site couldn't be reached — will need a retry.", "error");
         onSaved();
         return;
       }
@@ -690,7 +812,7 @@ function SingletonContentTab({
       setItem(existing);
       setValues(valuesFromPayload(fields, existing?.payload));
     } catch {
-      showToast(`Could not load ${module.label.toLowerCase()}.`);
+      showToast(`Could not load ${module.label.toLowerCase()}.`, "error");
     }
   }
 
@@ -710,7 +832,7 @@ function SingletonContentTab({
     } catch (err) {
       const saved = extractSavedItem(err);
       if (saved) {
-        showToast("Saved locally, but the external site couldn't be reached — will need a retry.");
+        showToast("Saved locally, but the external site couldn't be reached — will need a retry.", "error");
         load();
         return;
       }

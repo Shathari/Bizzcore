@@ -23,7 +23,7 @@ import { Table, TableHead, TableBody, TableRow, Th, Td } from "../../components/
 // included) — creating or editing a feature here can never affect any
 // other business, even one using the exact same key. Reached from that
 // business's own Business Detail page, not a global list.
-const FIELD_TYPES: FieldDef["type"][] = ["text", "textarea", "number", "date", "image", "select", "checkbox"];
+const FIELD_TYPES: FieldDef["type"][] = ["text", "textarea", "number", "date", "image", "list", "repeater", "select", "checkbox"];
 
 function fieldTypeLabel(type: FieldDef["type"]): string {
   switch (type) {
@@ -37,11 +37,33 @@ function fieldTypeLabel(type: FieldDef["type"]): string {
       return "Date";
     case "image":
       return "Image";
+    case "list":
+      return "List";
+    case "repeater":
+      return "Repeater (list of objects)";
     case "select":
       return "Dropdown";
     case "checkbox":
       return "Checkbox";
   }
+}
+
+// "key:Label" pairs, comma-separated — same compact convention as select's
+// options input just below. e.g. "title:Title, description:Description"
+// for a coreValues-style repeater.
+function parseItemFieldsInput(raw: string): { key: string; label: string }[] {
+  return raw
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .map((part) => {
+      const [key, label] = part.split(":").map((s) => s.trim());
+      return { key: key ?? "", label: label || key || "" };
+    });
+}
+
+function itemFieldsToInput(itemFields: { key: string; label: string }[] | undefined): string {
+  return (itemFields ?? []).map((f) => (f.label && f.label !== f.key ? `${f.key}:${f.label}` : f.key)).join(", ");
 }
 
 export default function FeatureCatalog() {
@@ -56,7 +78,7 @@ export default function FeatureCatalog() {
     try {
       setFeatures(await listFeatureCatalog(tenantId));
     } catch {
-      showToast("Could not load the feature catalog.");
+      showToast("Could not load the feature catalog.", "error");
       setFeatures([]);
     }
   }
@@ -73,7 +95,7 @@ export default function FeatureCatalog() {
       await load();
       showToast(`${feature.label} removed from the catalog`);
     } catch (err) {
-      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not delete feature.") : "Could not delete feature.");
+      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not delete feature.") : "Could not delete feature.", "error");
     } finally {
       setBusyId(null);
     }
@@ -191,6 +213,7 @@ type FieldRow = {
   type: FieldDef["type"];
   required?: boolean;
   options?: string[];
+  itemFields?: { key: string; label: string }[];
 };
 
 let uidCounter = 0;
@@ -211,6 +234,7 @@ function fieldRowsFrom(fields: FieldDef[]): FieldRow[] {
     type: f.type,
     required: "required" in f ? f.required : undefined,
     options: "options" in f ? f.options : undefined,
+    itemFields: "itemFields" in f ? f.itemFields : undefined,
   }));
 }
 
@@ -220,6 +244,15 @@ function toFieldDef(row: FieldRow): FieldDef {
   }
   if (row.type === "checkbox") {
     return { key: row.key.trim(), label: row.label.trim(), type: "checkbox" };
+  }
+  if (row.type === "repeater") {
+    return {
+      key: row.key.trim(),
+      label: row.label.trim(),
+      type: "repeater",
+      required: row.required,
+      itemFields: (row.itemFields ?? []).filter((f) => f.key.trim() && f.label.trim()),
+    };
   }
   return { key: row.key.trim(), label: row.label.trim(), type: row.type, required: row.required };
 }
@@ -271,6 +304,10 @@ function FeatureModal({
       }
       if (row.type === "select" && (!row.options || row.options.filter((o) => o.trim()).length === 0)) {
         setError(`Field "${row.label || row.key}" needs at least one dropdown option.`);
+        return;
+      }
+      if (row.type === "repeater" && (!row.itemFields || row.itemFields.filter((f) => f.key.trim() && f.label.trim()).length === 0)) {
+        setError(`Field "${row.label || row.key}" needs at least one sub-field.`);
         return;
       }
     }
@@ -409,7 +446,15 @@ function FeatureModal({
                     onChange={(e) => {
                       const type = e.target.value as FieldDef["type"];
                       if (type === "select") {
-                        updateFieldRow(row._uid, { type, options: (row as { options?: string[] }).options ?? [""] });
+                        updateFieldRow(row._uid, { type, options: row.options ?? [""] });
+                      } else if (type === "repeater") {
+                        updateFieldRow(row._uid, {
+                          type,
+                          itemFields: row.itemFields ?? [
+                            { key: "title", label: "Title" },
+                            { key: "description", label: "Description" },
+                          ],
+                        });
                       } else {
                         updateFieldRow(row._uid, { type });
                       }
@@ -443,6 +488,21 @@ function FeatureModal({
                       placeholder="Options, comma-separated (e.g. Small, Medium, Large)"
                       className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 text-xs focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
                     />
+                  </div>
+                )}
+                {row.type === "repeater" && (
+                  <div className="mt-2">
+                    <input
+                      type="text"
+                      value={itemFieldsToInput(row.itemFields)}
+                      onChange={(e) => updateFieldRow(row._uid, { itemFields: parseItemFieldsInput(e.target.value) })}
+                      placeholder="Sub-fields, comma-separated as key:Label (e.g. title:Title, description:Description)"
+                      className="w-full rounded-lg border border-neutral-300 px-2.5 py-1.5 text-xs focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+                    />
+                    <p className="mt-1 text-xs text-neutral-400">
+                      Each item in this list will be an object with these text sub-fields — e.g. a "Core Values"
+                      repeater with title:Title, description:Description sends [{"{"}"title": "...", "description": "..."{"}"}].
+                    </p>
                   </div>
                 )}
               </div>

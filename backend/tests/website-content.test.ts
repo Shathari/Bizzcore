@@ -647,6 +647,23 @@ describe("website-content: business admin generic modules", () => {
     expect(all[0].payload).toContain("+919800000002");
   });
 
+  it("never appends an id segment to a singleton's write-back URL, even once it has an externalId (bare baseUrl, not baseUrl/:id)", async () => {
+    const { tenant, admin } = await createTenantWithAdmin();
+    const cookie = await loginAs(admin.email);
+    await configureIntegration(tenant.id, "CONTACT_DETAILS", "https://example.com/api/contact", { permissionLevel: "MANAGE" });
+    fetchSpy.mockResolvedValue({ ok: true, text: async () => JSON.stringify({ id: "contact-1" }) } as Response);
+
+    await request(app).post("/api/website-content/CONTACT_DETAILS").set("Cookie", cookie).send({ phone: "+919800000001" });
+    // The second write is a real update (pushUpdate) against a record that
+    // now has an externalId — the exact situation that used to get
+    // baseUrl/:externalId appended for a singleton, 404ing against an
+    // external API whose singleton route is only ever the bare baseUrl.
+    await request(app).post("/api/website-content/CONTACT_DETAILS").set("Cookie", cookie).send({ phone: "+919800000002" });
+
+    const secondCallUrl = fetchSpy.mock.calls[1][0] as string;
+    expect(secondCallUrl).toBe("https://example.com/api/contact");
+  });
+
   it("keeps content items and module availability fully isolated per tenant", async () => {
     const tenantA = await createTenantWithAdmin("Content Tenant A");
     const tenantB = await createTenantWithAdmin("Content Tenant B");

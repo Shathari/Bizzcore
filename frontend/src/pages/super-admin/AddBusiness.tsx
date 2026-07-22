@@ -66,7 +66,7 @@ export default function AddBusiness() {
       setResult({ ...result, delivery: res.delivery });
       showToast("Credentials resent");
     } catch {
-      showToast("Could not resend credentials.");
+      showToast("Could not resend credentials.", "error");
     } finally {
       setResending(false);
     }

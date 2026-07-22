@@ -398,6 +398,59 @@ describe("super-admin website-content", () => {
     expect(all).toHaveLength(1);
   });
 
+  it("Sync Now never reports an item as synced when its own retry just failed (retriedFailed must agree with syncStatus)", async () => {
+    const { tenant } = await createTenantWithAdmin();
+    const { user } = await createSuperAdmin();
+    const cookie = await loginAs(user.email);
+    // CONTACT_DETAILS is a singleton (one row per tenant) — the same shape
+    // as any other single-record feature (e.g. an "About" section): the
+    // retried row IS the row the following import step would touch, unlike
+    // a list feature where a failed create (no externalId yet) simply won't
+    // match anything the import fetches.
+    await configureIntegration(tenant.id, "CONTACT_DETAILS", "https://example.com/api/contact", { permissionLevel: "MANAGE" });
+
+    // First create fails against the external API — item stored locally as "failed".
+    fetchSpy.mockResolvedValue({ ok: false, status: 500, text: async () => "server error" } as Response);
+    const created = await request(app)
+      .post(`/api/super-admin/website-content/${tenant.id}/CONTACT_DETAILS`)
+      .set("Cookie", cookie)
+      .send({ phone: "+919800000001" });
+    expect(created.status).toBe(502);
+    const itemId = created.body.id;
+
+    // The external API is still down for the retry POST, but (hypothetically)
+    // healthy enough to answer the immediately-following import GET — this is
+    // exactly the scenario that used to produce the contradictory response:
+    // retriedFailed: 1 alongside an item reported as "synced".
+    fetchSpy.mockResolvedValueOnce({ ok: false, status: 500, text: async () => "server error" } as Response);
+    fetchSpy.mockResolvedValueOnce({
+      ok: true,
+      text: async () => JSON.stringify({ id: "contact-ext-1", phone: "+919800000000" }),
+    } as Response);
+    const sync = await request(app).post(`/api/super-admin/website-content/${tenant.id}/CONTACT_DETAILS/sync`).set("Cookie", cookie);
+    expect(sync.status).toBe(200);
+    expect(sync.body.retried).toBe(1);
+    expect(sync.body.retriedFailed).toBe(1);
+    // The import step must not silently overwrite this item's status to
+    // "synced" (discarding the unsynced local edit and the fact that its
+    // retry failed) just because a separate GET happened to succeed.
+    expect(sync.body.imported).toBe(0);
+    expect(sync.body.items).toHaveLength(1);
+    expect(sync.body.items[0].id).toBe(itemId);
+    expect(sync.body.items[0].syncStatus).toBe("failed");
+    expect(sync.body.items[0].lastError).not.toBeNull();
+
+    const retriedItem = await prisma.websiteContentItem.findUnique({ where: { id: itemId } });
+    expect(retriedItem!.syncStatus).toBe("failed");
+    expect(retriedItem!.lastError).not.toBeNull();
+
+    const contactFeature = await prisma.feature.findUniqueOrThrow({
+      where: { tenantId_key: { tenantId: tenant.id, key: "CONTACT_DETAILS" } },
+    });
+    const all = await prisma.websiteContentItem.findMany({ where: { tenantId: tenant.id, featureId: contactFeature.id } });
+    expect(all).toHaveLength(1);
+  });
+
   it("passes the standardized filters through as query params on the import GET", async () => {
     const { tenant } = await createTenantWithAdmin();
     const { user } = await createSuperAdmin();

@@ -67,15 +67,22 @@ type IntegrationConfig = {
   baseUrl: string;
   authType: string;
   encryptedCredentials: string | null;
-  // authType "login" only — see connectorLogin.ts. Never set on a
-  // per-method EndpointOverride (login-based auth is base-integration-only,
-  // not supported per-method), so this only ever comes from the shared
-  // integration, never an override.
-  accessTokenEncrypted?: string | null;
+  // authType "login" only — see connectorLogin.ts. The token lives on the
+  // shared DataSource (one login per connected website, not per feature),
+  // never on a per-method EndpointOverride (login-based auth is
+  // base-integration-only, not supported per-method).
+  dataSource?: { accessTokenEncrypted: string | null } | null;
   fieldMapping?: string | null;
   responseMapping?: string | null;
   endpoints?: EndpointOverride[];
   lookupKey?: string | null;
+  // Feature.isSingleton (see lib/websiteContentService.ts's ActiveIntegration)
+  // — a singleton content type has exactly one record on the external site
+  // and, per every external API this was tested against, is addressed at
+  // the bare baseUrl for every method (GET *and* write), never
+  // baseUrl/:id — there is no per-record id segment in its route table at
+  // all. See resolveWriteRequest's convention-URL branch.
+  isSingleton?: boolean;
 };
 
 // Substitutes a literal "{id}" placeholder in a Super-Admin-configured
@@ -114,7 +121,7 @@ function resolveEndpoint(
     url: override?.url ? substituteIdPlaceholder(override.url, externalId) : fallbackUrl,
     authType: override?.authType ?? integration.authType,
     encryptedCredentials: override?.authType ? override.encryptedCredentials : integration.encryptedCredentials,
-    accessTokenEncrypted: override?.authType ? null : (integration.accessTokenEncrypted ?? null),
+    accessTokenEncrypted: override?.authType ? null : (integration.dataSource?.accessTokenEncrypted ?? null),
   };
 }
 
@@ -188,7 +195,7 @@ function resolveWriteRequest(
   const override = integration.endpoints?.find((e) => e.method === method);
   const authType = override?.authType ?? integration.authType;
   const encryptedCredentials = override?.authType ? override.encryptedCredentials : integration.encryptedCredentials;
-  const accessTokenEncrypted = override?.authType ? null : (integration.accessTokenEncrypted ?? null);
+  const accessTokenEncrypted = override?.authType ? null : (integration.dataSource?.accessTokenEncrypted ?? null);
 
   if (method === "POST") {
     return { ok: true, url: override?.url || base, authType, encryptedCredentials, accessTokenEncrypted };
@@ -205,7 +212,13 @@ function resolveWriteRequest(
     return { ok: true, url: lookupResult.url, authType, encryptedCredentials, accessTokenEncrypted };
   }
 
-  const conventionUrl = externalId ? `${base}/${externalId}` : base;
+  // A singleton content type (e.g. an "About" section) never gets an id
+  // segment appended — there's exactly one record, and its update route is
+  // the bare baseUrl, not baseUrl/:id (confirmed live: an id-suffixed PATCH
+  // 404s "Route not found" against a real external API that only defines
+  // the bare route). A genuine collection (Products) still addresses a
+  // specific record by externalId as before.
+  const conventionUrl = integration.isSingleton ? base : externalId ? `${base}/${externalId}` : base;
   return { ok: true, url: override?.url || conventionUrl, authType, encryptedCredentials, accessTokenEncrypted };
 }
 

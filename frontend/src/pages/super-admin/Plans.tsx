@@ -16,7 +16,7 @@ export default function Plans() {
     listPlans()
       .then(setPlans)
       .catch(() => {
-        showToast("Could not load plans.");
+        showToast("Could not load plans.", "error");
         setPlans([]);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps

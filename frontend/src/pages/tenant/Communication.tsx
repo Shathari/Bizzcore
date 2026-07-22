@@ -95,7 +95,7 @@ function Inbox() {
       setConversations(data);
       if (!selectedId && data.length > 0) setSelectedId(data[0].id);
     } catch {
-      showToast("Could not load conversations.");
+      showToast("Could not load conversations.", "error");
     }
   }
 
@@ -109,7 +109,7 @@ function Inbox() {
     setMockNotice(null);
     getMessages(selectedId)
       .then(setMessages)
-      .catch(() => showToast("Could not load conversation."));
+      .catch(() => showToast("Could not load conversation.", "error"));
   }, [selectedId]);
 
   const selected = conversations?.find((c) => c.id === selectedId) ?? null;
@@ -133,7 +133,7 @@ function Inbox() {
       }
       loadConversations();
     } catch {
-      showToast("Could not send message.");
+      showToast("Could not send message.", "error");
     } finally {
       setSending(false);
     }
@@ -246,7 +246,7 @@ function Broadcasts() {
     try {
       setBroadcasts(await listBroadcasts());
     } catch {
-      showToast("Could not load broadcasts.");
+      showToast("Could not load broadcasts.", "error");
     }
   }
 
@@ -260,7 +260,7 @@ function Broadcasts() {
       showToast("Broadcast canceled");
       load();
     } catch {
-      showToast("Could not cancel broadcast.");
+      showToast("Could not cancel broadcast.", "error");
     }
   }
 

@@ -77,6 +77,7 @@ model Tenant {
   socialComments            SocialComment[]
   features                  Feature[]
   websiteIntegrations       WebsiteIntegration[]
+  dataSources               DataSource[]
   websiteContentItems       WebsiteContentItem[]
   auditLogTargets           AuditLog[]                 @relation("AuditLogTarget")
   accessLogs                AccessLog[]
@@ -352,28 +353,35 @@ model WebsiteIntegration {
   baseUrl                  String
   authType                 String    @default("none") // none | bearer | apiKey | basic | login — shared default across every HTTP method unless overridden per-method below
   // AES-256-GCM encrypted JSON blob, shape depends on authType — see
-  // lib/websiteApiClient.ts. Null when authType is "none" or "login" (the
-  // login-specific fields below carry everything for that mode instead).
+  // lib/websiteApiClient.ts. Null when authType is "none" or "login" (a
+  // "login"-mode integration's actual credentials/token live on its shared
+  // DataSource below instead — see that model's comment for why).
   encryptedCredentials     String?
-  // --- authType "login" only ------------------------------------------
-  // The tenant Admin supplies their OWN external site's login credentials
-  // (not a BizzCore account) instead of pasting a raw token; the backend
-  // performs that login on their behalf and stores what comes back. Same
-  // "written, never read back" discipline as encryptedCredentials — none
-  // of this ever reaches a Business-Admin- or Super-Admin-facing response.
-  loginUrl                 String? // the external site's own login endpoint (e.g. https://tenant-site.example/api/auth/login) — not a secret itself
-  loginEmailEncrypted      String? // AES-256-GCM encrypted — login identifier on the TENANT'S site
-  loginPasswordEncrypted   String? // AES-256-GCM encrypted — kept (not used-once) because automatic 401 re-login needs it again later
-  accessTokenEncrypted     String? // AES-256-GCM encrypted — the token actually sent as Authorization: Bearer <token>; refreshed via loginUrl manually or automatically after a 401
-  tokenExpiresAt           DateTime? // from the login response, when the external API provides one — informational display only; expiry is actually discovered live via a 401, not by checking this first
-  refreshTokenEncrypted    String? // AES-256-GCM encrypted — populated only if the external API's login response includes one
+  // authType "login" only. One admin login is a property of the connected
+  // WEBSITE, not of any one feature on it (confirmed directly against a
+  // real tenant site: one /api/auth/login for the whole API, checked by
+  // every protected route) — so the actual login endpoint/credentials/
+  // token live on DataSource, shared by every feature whose baseUrl
+  // resolves to the same origin, resolved via dataSourceId below.
+  // Originally this integration stored its own independent copy
+  // (loginUrl/loginEmailEncrypted/loginPasswordEncrypted/
+  // accessTokenEncrypted/tokenExpiresAt/refreshTokenEncrypted) — that let
+  // two features on the identical site each be configured with their own
+  // (and independently wrong) login URL, which is exactly what happened in
+  // practice. Consolidated to DataSource to make that class of mistake
+  // structurally impossible: log in once per site, every feature on it
+  // benefits.
+  dataSourceId             String?
+  dataSource               DataSource? @relation(fields: [dataSourceId], references: [id])
   // "OK" | "CredentialsExpired" — distinct from a generic sync/import
   // failure: only ever set to "CredentialsExpired" when an automatic
   // 401-triggered re-login itself fails (stored password now wrong, login
   // endpoint erroring, etc.), so the tenant Admin sees "reconnect this"
   // rather than a vague sync error. Cleared back to "OK" on any successful
   // login/refresh. Meaningful for every authType, not just "login" — a
-  // manually-pasted bearer token can equally go stale.
+  // manually-pasted bearer token can equally go stale. For authType
+  // "login" this mirrors (and is kept in sync with) the shared
+  // DataSource's own credentialStatus — see reconcileCredentialStatus.
   credentialStatus         String    @default("OK")
   active                   Boolean   @default(true)
   // Per-feature, 3-state with `active`: inactive = No Access, active+VIEW
@@ -450,6 +458,43 @@ model WebsiteIntegration {
 
   @@unique([tenantId, featureId])
   @@index([tenantId])
+  @@index([dataSourceId])
+}
+
+// A tenant's one connected external website, identified by its origin
+// (scheme+host — e.g. "https://tenant-site.example") — the actual scope a
+// real admin login is issued for, one level above any single Feature.
+// Auto-resolved (find-or-create) from whatever baseUrl a WebsiteIntegration
+// is saved with (see lib/connectorLogin.ts's resolveDataSource), never
+// something Super Admin explicitly creates — every feature pointed at the
+// same origin transparently shares this same row and, once logged in once,
+// the same token. Two tenants can never share a row (scoped by tenantId),
+// and two features on genuinely different sites for the same tenant get
+// their own independent rows.
+model DataSource {
+  id                     String    @id @default(cuid())
+  tenantId               String
+  tenant                 Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  origin                 String // scheme+host, e.g. "https://tenant-site.example" — no path, no trailing slash
+  // The tenant Admin supplies THEIR OWN external site's login credentials
+  // (not a BizzCore account) instead of pasting a raw token; the backend
+  // performs that login on their behalf and stores what comes back. Same
+  // "written, never read back" discipline as WebsiteIntegration.
+  // encryptedCredentials — none of this ever reaches a Business-Admin- or
+  // Super-Admin-facing response.
+  loginUrl               String? // the external site's own login endpoint (e.g. https://tenant-site.example/api/auth/login) — not a secret itself
+  loginEmailEncrypted    String? // AES-256-GCM encrypted — login identifier on the TENANT'S site
+  loginPasswordEncrypted String? // AES-256-GCM encrypted — kept (not used-once) because automatic 401 re-login needs it again later
+  accessTokenEncrypted   String? // AES-256-GCM encrypted — the token actually sent as Authorization: Bearer <token> by every feature sharing this DataSource; refreshed via loginUrl manually or automatically after a 401
+  tokenExpiresAt         DateTime? // from the login response, when the external API provides one — informational display only; expiry is actually discovered live via a 401, not by checking this first
+  refreshTokenEncrypted  String? // AES-256-GCM encrypted — populated only if the external API's login response includes one
+  credentialStatus       String    @default("OK") // "OK" | "CredentialsExpired" — see WebsiteIntegration.credentialStatus's comment; this is the source of truth for every "login"-authType feature sharing this DataSource
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  websiteIntegrations WebsiteIntegration[]
+
+  @@unique([tenantId, origin])
 }
 
 // Append-only history of "Analyze Endpoint"/"Refresh Schema" results —

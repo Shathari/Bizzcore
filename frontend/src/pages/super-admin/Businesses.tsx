@@ -59,7 +59,7 @@ export default function Businesses() {
       await load(showDeleted);
       showToast(`${b.businessName} restored`);
     } catch {
-      showToast("Could not restore business.");
+      showToast("Could not restore business.", "error");
     } finally {
       setTogglingId(null);
     }
@@ -82,7 +82,7 @@ export default function Businesses() {
       await load();
       showToast(`${b.businessName} ${nextStatus === "Suspended" ? "suspended" : "reactivated"}`);
     } catch {
-      showToast("Could not update business status.");
+      showToast("Could not update business status.", "error");
     } finally {
       setTogglingId(null);
     }

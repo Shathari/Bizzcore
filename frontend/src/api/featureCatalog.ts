@@ -7,9 +7,16 @@ import { apiClient } from "./client";
 // own independent copy; a Feature created here only ever exists for the
 // one tenant passed in, never shared with or visible to any other.
 export type FieldDef =
-  | { key: string; label: string; type: "text" | "textarea" | "number" | "date" | "image"; required?: boolean }
+  | { key: string; label: string; type: "text" | "textarea" | "number" | "date" | "image" | "list"; required?: boolean }
   | { key: string; label: string; type: "select"; required?: boolean; options: string[] }
-  | { key: string; label: string; type: "checkbox" };
+  | { key: string; label: string; type: "checkbox" }
+  | {
+      key: string;
+      label: string;
+      type: "repeater";
+      required?: boolean;
+      itemFields: { key: string; label: string; type?: "text" | "textarea" }[];
+    };
 
 export type FeatureDefinition = {
   id: string;

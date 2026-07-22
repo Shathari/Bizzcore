@@ -93,7 +93,7 @@ export default function Customers() {
       setDeleteTarget(null);
       await load({ search: search || undefined, segment: segmentFilter || undefined });
     } catch {
-      showToast("Could not delete customer.");
+      showToast("Could not delete customer.", "error");
     } finally {
       setDeleting(false);
     }
@@ -104,7 +104,7 @@ export default function Customers() {
     try {
       await exportCustomers();
     } catch (err) {
-      showToast(await exportErrorMessage(err, "Could not export customers."));
+      showToast(await exportErrorMessage(err, "Could not export customers."), "error");
     } finally {
       setExporting(false);
     }
@@ -117,7 +117,7 @@ export default function Customers() {
       setContactExportOpen(false);
       showToast("Export with contact info downloaded.");
     } catch (err) {
-      showToast(await exportErrorMessage(err, "Could not export contact info."));
+      showToast(await exportErrorMessage(err, "Could not export contact info."), "error");
     } finally {
       setContactExporting(false);
     }

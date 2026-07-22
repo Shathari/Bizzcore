@@ -138,7 +138,8 @@ function FollowUpCallAction({ customerId, phoneMasked }: { customerId: string; p
       showToast(
         axios.isAxiosError(err) && err.response?.status === 429
           ? "Too many reveals — wait a moment and try again."
-          : "Could not retrieve this number."
+          : "Could not retrieve this number.",
+        "error"
       );
     } finally {
       setLoading(false);

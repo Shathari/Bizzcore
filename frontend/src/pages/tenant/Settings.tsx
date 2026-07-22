@@ -42,7 +42,7 @@ export default function Settings() {
       setMeta(data.meta);
       setWhatsapp(data.whatsapp);
     } catch {
-      showToast("Could not load integration settings.");
+      showToast("Could not load integration settings.", "error");
     }
   }
 
@@ -168,7 +168,7 @@ function MetaSettingsCard({ status, onChanged }: { status: MetaStatus | null; on
       showToast("Meta disconnected");
       onChanged();
     } catch {
-      showToast("Could not disconnect Meta.");
+      showToast("Could not disconnect Meta.", "error");
     } finally {
       setDisconnecting(false);
     }
@@ -258,7 +258,7 @@ function WhatsAppSettingsCard({ status, onChanged }: { status: WhatsAppStatus | 
       showToast("WhatsApp disconnected");
       onChanged();
     } catch {
-      showToast("Could not disconnect WhatsApp.");
+      showToast("Could not disconnect WhatsApp.", "error");
     } finally {
       setDisconnecting(false);
     }

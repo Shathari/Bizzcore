@@ -58,7 +58,7 @@ export function WebsiteModulesPanel({ api }: { api: WebsiteModulesApi }) {
     try {
       setModules(await api.listModules());
     } catch {
-      showToast("Could not load website modules.");
+      showToast("Could not load website modules.", "error");
       setModules([]);
     }
   }
@@ -75,7 +75,7 @@ export function WebsiteModulesPanel({ api }: { api: WebsiteModulesApi }) {
       showToast(`Imported ${res.imported} item${res.imported === 1 ? "" : "s"} for ${module.label}.`);
       await load();
     } catch (err) {
-      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Import failed.") : "Import failed.");
+      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Import failed.") : "Import failed.", "error");
     } finally {
       setBusyKey(null);
     }
@@ -88,7 +88,7 @@ export function WebsiteModulesPanel({ api }: { api: WebsiteModulesApi }) {
       showToast(`Synced ${module.label}: ${res.retried} retried, ${res.imported} imported.`);
       await load();
     } catch (err) {
-      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Sync failed.") : "Sync failed.");
+      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Sync failed.") : "Sync failed.", "error");
     } finally {
       setBusyKey(null);
     }

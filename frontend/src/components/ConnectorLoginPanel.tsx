@@ -1,17 +1,20 @@
 import { useEffect, useState, type FormEvent } from "react";
 import axios from "axios";
 import { AlertTriangle, KeyRound, RefreshCw } from "lucide-react";
-import { listActiveModules, type ModuleInfo } from "../api/websiteContent";
-import { getConnectorLoginStatus, saveConnectorLogin, refreshConnectorToken, type ConnectorLoginStatus } from "../api/connectorLogin";
+import { listConnectorDataSources, saveConnectorLogin, refreshConnectorToken, type ConnectorDataSource } from "../api/connectorLogin";
 import { useToast } from "./Toast";
 import { Button } from "./Button";
 import { Modal } from "./Modal";
 
-// Tenant-facing "Log in with admin credentials" setup + refresh, for
-// whichever of this tenant's active connectors use it. The rest of
-// connector configuration (base URL, other auth types, field mapping)
-// stays Super-Admin-only — this is the one exception (see
-// backend/src/routes/connectorLogin.ts's file comment).
+// Tenant-facing "Log in with admin credentials" setup + refresh — one row
+// per CONNECTED WEBSITE (DataSource), not per feature. Every feature on the
+// same site shares one login/token (see backend/src/lib/connectorLogin.ts);
+// showing this per-feature previously let two features on the identical
+// site each get configured with their own, separately-typed (and
+// separately wrong) login URL — the exact mistake this grouping prevents.
+// The rest of connector configuration (base URL, other auth types, field
+// mapping) stays Super-Admin-only and per-feature — this is the one
+// exception (see backend/src/routes/connectorLogin.ts's file comment).
 
 function formatExpiry(iso: string | null): { text: string; expired: boolean } | null {
   if (!iso) return null;
@@ -29,30 +32,18 @@ function formatDuration(ms: number): string {
   return `${Math.round(hours / 24)}d`;
 }
 
-type RowState = { module: ModuleInfo; status: ConnectorLoginStatus | null };
-
 export function ConnectorLoginPanel() {
   const { showToast } = useToast();
-  const [rows, setRows] = useState<RowState[] | null>(null);
-  const [refreshingKey, setRefreshingKey] = useState<string | null>(null);
-  const [editingModule, setEditingModule] = useState<ModuleInfo | null>(null);
+  const [dataSources, setDataSources] = useState<ConnectorDataSource[] | null>(null);
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const [editingSource, setEditingSource] = useState<ConnectorDataSource | null>(null);
 
   async function load() {
     try {
-      const modules = await listActiveModules();
-      const withStatus = await Promise.all(
-        modules.map(async (module) => {
-          try {
-            return { module, status: await getConnectorLoginStatus(module.key) };
-          } catch {
-            return { module, status: null };
-          }
-        })
-      );
-      setRows(withStatus);
+      setDataSources(await listConnectorDataSources());
     } catch {
-      showToast("Could not load connector status.");
-      setRows([]);
+      showToast("Could not load connector status.", "error");
+      setDataSources([]);
     }
   }
 
@@ -61,29 +52,34 @@ export function ConnectorLoginPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function handleRefresh(module: ModuleInfo) {
-    setRefreshingKey(module.key);
+  // Any one of this DataSource's features works as the write action's
+  // routing key — they all resolve to the same DataSource server-side.
+  function representativeFeatureKey(ds: ConnectorDataSource): string {
+    return ds.features[0].key;
+  }
+
+  async function handleRefresh(ds: ConnectorDataSource) {
+    setRefreshingId(ds.id);
     try {
-      await refreshConnectorToken(module.key);
-      showToast(`Access token refreshed for ${module.label}.`);
+      await refreshConnectorToken(representativeFeatureKey(ds));
+      showToast(`Access token refreshed for ${ds.origin}.`);
       await load();
     } catch (err) {
-      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not refresh the access token.") : "Could not refresh the access token.");
+      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not refresh the access token.") : "Could not refresh the access token.", "error");
     } finally {
-      setRefreshingKey(null);
+      setRefreshingId(null);
     }
   }
 
-  if (rows === null) {
+  if (dataSources === null) {
     return <p className="text-sm text-neutral-400">Loading…</p>;
   }
 
-  const loginRows = rows.filter((r) => r.status !== null);
-  if (loginRows.length === 0) {
+  if (dataSources.length === 0) {
     return <p className="text-sm text-neutral-500">No connected data sources yet — nothing to authenticate.</p>;
   }
 
-  const anyExpired = loginRows.some((r) => r.status!.credentialStatus === "CredentialsExpired");
+  const anyExpired = dataSources.some((d) => d.credentialStatus === "CredentialsExpired");
 
   return (
     <div>
@@ -92,51 +88,49 @@ export function ConnectorLoginPanel() {
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <p>
             One or more connections need attention — their stored credentials are no longer working. Data won't sync for
-            that module until you reconnect it below.
+            that site until you reconnect it below.
           </p>
         </div>
       )}
       <div className="divide-y divide-neutral-100 rounded-xl border border-neutral-200">
-        {loginRows.map(({ module, status }) => {
-          const s = status!;
-          const expired = s.credentialStatus === "CredentialsExpired";
-          const expiry = formatExpiry(s.tokenExpiresAt);
-          const busy = refreshingKey === module.key;
+        {dataSources.map((ds) => {
+          const expired = ds.credentialStatus === "CredentialsExpired";
+          const expiry = formatExpiry(ds.tokenExpiresAt);
+          const busy = refreshingId === ds.id;
           return (
-            <div key={module.key} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+            <div key={ds.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
               <div>
-                <p className="text-sm font-medium text-neutral-900">{module.label}</p>
+                <p className="text-sm font-medium text-neutral-900">{ds.origin}</p>
+                <p className="mt-0.5 text-xs text-neutral-400">
+                  Used by: {ds.features.map((f) => f.label).join(", ")}
+                </p>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                  {/* credentialStatus is tracked for every auth type, not just
-                      "login" — a plain pasted bearer token going stale is just
-                      as real a "needs attention" case, so this alert can't be
-                      gated on loginConfigured. */}
                   <span
                     className={`rounded-full px-2 py-0.5 font-medium ${
                       expired
                         ? "bg-red-100 text-red-700"
-                        : s.loginConfigured
+                        : ds.loginConfigured
                           ? "bg-emerald-100 text-emerald-700"
                           : "bg-neutral-100 text-neutral-500"
                     }`}
                   >
-                    {expired ? "Needs reconnecting" : s.loginConfigured ? "Connected" : "Not using login-based access"}
+                    {expired ? "Needs reconnecting" : ds.loginConfigured ? "Connected" : "Not using login-based access"}
                   </span>
-                  {s.loginConfigured && expiry && (
+                  {ds.loginConfigured && expiry && (
                     <span className={expiry.expired ? "text-red-600" : "text-neutral-400"}>{expiry.text}</span>
                   )}
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                {s.loginConfigured && (
-                  <Button variant="secondary" onClick={() => handleRefresh(module)} disabled={busy}>
+                {ds.loginConfigured && (
+                  <Button variant="secondary" onClick={() => handleRefresh(ds)} disabled={busy}>
                     <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
                     {busy ? "Refreshing…" : "Get / Refresh Access Token"}
                   </Button>
                 )}
-                <Button variant="secondary" onClick={() => setEditingModule(module)}>
+                <Button variant="secondary" onClick={() => setEditingSource(ds)}>
                   <KeyRound className="mr-1.5 h-3.5 w-3.5" />
-                  {s.loginConfigured ? "Edit login details" : "Log in with admin credentials"}
+                  {ds.loginConfigured ? "Edit login details" : "Log in with admin credentials"}
                 </Button>
               </div>
             </div>
@@ -144,9 +138,9 @@ export function ConnectorLoginPanel() {
         })}
       </div>
 
-      {editingModule && (
+      {editingSource && (
         <LoginSetupModal
-          module={editingModule}
+          dataSource={editingSource}
           // Reload on close too, not just on a successful save: a failed
           // save (wrong password) still persists the new credentials and
           // flips credentialStatus to CredentialsExpired server-side (see
@@ -155,11 +149,11 @@ export function ConnectorLoginPanel() {
           // its last-loaded (stale) status until something else happened
           // to trigger a reload.
           onClose={() => {
-            setEditingModule(null);
+            setEditingSource(null);
             load();
           }}
           onSaved={async () => {
-            setEditingModule(null);
+            setEditingSource(null);
             await load();
           }}
         />
@@ -168,7 +162,15 @@ export function ConnectorLoginPanel() {
   );
 }
 
-function LoginSetupModal({ module, onClose, onSaved }: { module: ModuleInfo; onClose: () => void; onSaved: () => void }) {
+function LoginSetupModal({
+  dataSource,
+  onClose,
+  onSaved,
+}: {
+  dataSource: ConnectorDataSource;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
   const { showToast } = useToast();
   const [loginUrl, setLoginUrl] = useState("");
   const [email, setEmail] = useState("");
@@ -181,8 +183,8 @@ function LoginSetupModal({ module, onClose, onSaved }: { module: ModuleInfo; onC
     setError(null);
     setSaving(true);
     try {
-      await saveConnectorLogin(module.key, { loginUrl, email, password });
-      showToast(`Logged in — ${module.label} is now using your admin credentials.`);
+      await saveConnectorLogin(dataSource.features[0].key, { loginUrl, email, password });
+      showToast(`Logged in — ${dataSource.origin} is now using your admin credentials.`);
       onSaved();
     } catch (err) {
       setError(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not save login details.") : "Could not save login details.");
@@ -192,12 +194,13 @@ function LoginSetupModal({ module, onClose, onSaved }: { module: ModuleInfo; onC
   }
 
   return (
-    <Modal open onClose={onClose} title={`Log in with admin credentials — ${module.label}`}>
+    <Modal open onClose={onClose} title={`Log in with admin credentials — ${dataSource.origin}`}>
       <form onSubmit={handleSubmit} className="space-y-4">
         <p className="text-sm text-neutral-500">
           Enter YOUR website's own login details (not a BizzCore account) — the same email and password you'd use to
-          sign in to {module.label.toLowerCase()}'s admin panel on your own site. We'll log in on your behalf and keep
-          the access token refreshed automatically.
+          sign in to {dataSource.origin}'s admin panel. This is a single login for the whole site — every feature
+          connected to it ({dataSource.features.map((f) => f.label).join(", ")}) will use the same token, refreshed
+          automatically.
         </p>
         <div>
           <label className="block text-sm font-medium text-neutral-700">Login endpoint URL</label>

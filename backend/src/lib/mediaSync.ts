@@ -200,7 +200,7 @@ export type MediaSyncIntegrationConfig = {
   baseUrl: string;
   authType: string;
   encryptedCredentials: string | null;
-  accessTokenEncrypted?: string | null;
+  dataSource?: { accessTokenEncrypted: string | null } | null;
 };
 
 export type SyncMediaFieldsParams = {
@@ -247,7 +247,7 @@ export async function syncMediaFields(params: SyncMediaFieldsParams): Promise<Sy
   }
 
   const uploadUrl = deriveUploadUrl(integration.baseUrl);
-  const headers = buildAuthHeaders(integration.authType, integration.encryptedCredentials, integration.accessTokenEncrypted ?? null);
+  const headers = buildAuthHeaders(integration.authType, integration.encryptedCredentials, integration.dataSource?.accessTokenEncrypted ?? null);
 
   const nextPayload = { ...payload };
   const nextMediaUploads = { ...existingMediaUploads };

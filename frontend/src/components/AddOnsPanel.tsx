@@ -45,7 +45,7 @@ export function AddOnsPanel({ tenantId }: { tenantId: string }) {
       setCatalog(c);
       setTenantAddOns(t);
     } catch {
-      showToast("Could not load add-ons.");
+      showToast("Could not load add-ons.", "error");
     }
   }
 
@@ -85,7 +85,7 @@ export function AddOnsPanel({ tenantId }: { tenantId: string }) {
       showToast("Add-on cancelled.");
       await load();
     } catch {
-      showToast("Could not cancel add-on.");
+      showToast("Could not cancel add-on.", "error");
     } finally {
       setCancellingId(null);
     }

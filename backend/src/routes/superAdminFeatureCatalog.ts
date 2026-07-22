@@ -23,7 +23,7 @@ const fieldDefSchema = z.union([
   z.object({
     key: z.string().trim().min(1),
     label: z.string().trim().min(1),
-    type: z.enum(["text", "textarea", "number", "date", "image"]),
+    type: z.enum(["text", "textarea", "number", "date", "image", "list"]),
     required: z.boolean().optional(),
   }),
   z.object({
@@ -37,6 +37,21 @@ const fieldDefSchema = z.union([
     key: z.string().trim().min(1),
     label: z.string().trim().min(1),
     type: z.literal("checkbox"),
+  }),
+  z.object({
+    key: z.string().trim().min(1),
+    label: z.string().trim().min(1),
+    type: z.literal("repeater"),
+    required: z.boolean().optional(),
+    itemFields: z
+      .array(
+        z.object({
+          key: z.string().trim().min(1),
+          label: z.string().trim().min(1),
+          type: z.enum(["text", "textarea"]).optional(),
+        })
+      )
+      .min(1, "At least one sub-field is required"),
   }),
 ]);
 

@@ -21,7 +21,7 @@ export default function PlanDetail() {
       setPriceMonthly(String(p.priceMonthly));
       setPriceYearly(String(p.priceYearly));
     } catch {
-      showToast("Could not load this plan.");
+      showToast("Could not load this plan.", "error");
     }
   }
 
@@ -34,7 +34,7 @@ export default function PlanDetail() {
     if (!plan) return;
     const value = Number(raw);
     if (!Number.isFinite(value) || value < 0) {
-      showToast("Enter a valid price.");
+      showToast("Enter a valid price.", "error");
       if (field === "priceMonthly") setPriceMonthly(String(plan.priceMonthly));
       else setPriceYearly(String(plan.priceYearly));
       return;
@@ -44,7 +44,7 @@ export default function PlanDetail() {
       const updated = await updatePlan(plan.id, { [field]: value });
       setPlan({ ...plan, priceMonthly: updated.priceMonthly, priceYearly: updated.priceYearly });
     } catch (err) {
-      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not save price.") : "Could not save price.");
+      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not save price.") : "Could not save price.", "error");
       if (field === "priceMonthly") setPriceMonthly(String(plan.priceMonthly));
       else setPriceYearly(String(plan.priceYearly));
     }
@@ -58,7 +58,7 @@ export default function PlanDetail() {
       await updatePlan(plan.id, { [field]: value });
     } catch (err) {
       setPlan((p) => (p ? { ...p, [field]: previous } : p));
-      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not save.") : "Could not save.");
+      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not save.") : "Could not save.", "error");
     }
   }
 
@@ -77,7 +77,7 @@ export default function PlanDetail() {
       await updatePlanFeature(plan.id, featureKey, { included: nextIncluded, value: nextValue });
     } catch (err) {
       setPlan((p) => (p ? { ...p, features: previousFeatures } : p));
-      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not save this feature.") : "Could not save this feature.");
+      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not save this feature.") : "Could not save this feature.", "error");
     }
   }
 

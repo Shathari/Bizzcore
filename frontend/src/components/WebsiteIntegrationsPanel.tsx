@@ -108,7 +108,7 @@ export function WebsiteIntegrationsPanel({ api }: { api: WebsiteIntegrationsApi 
     try {
       setIntegrations(await api.list());
     } catch {
-      showToast("Could not load website integrations.");
+      showToast("Could not load website integrations.", "error");
     } finally {
       setLoading(false);
     }
@@ -126,7 +126,7 @@ export function WebsiteIntegrationsPanel({ api }: { api: WebsiteIntegrationsApi 
       await load();
       showToast(`${status.featureLabel} integration removed`);
     } catch {
-      showToast("Could not remove integration.");
+      showToast("Could not remove integration.", "error");
     } finally {
       setBusy(false);
     }
@@ -145,7 +145,7 @@ export function WebsiteIntegrationsPanel({ api }: { api: WebsiteIntegrationsApi 
       await load();
       showToast(`${status.featureLabel} ${status.active ? "disabled" : "enabled"}`);
     } catch {
-      showToast("Could not update integration.");
+      showToast("Could not update integration.", "error");
     } finally {
       setBusy(false);
     }
@@ -290,15 +290,18 @@ function fieldMappingRowsFrom(mapping: Record<string, string> | null | undefined
 // created via lib/featureCatalog.ts's existing updateFeature (reused
 // as-is through api/featureCatalog.ts, no new field-creation code). Only
 // offers the types this compact inline form can meaningfully collect —
-// "select" needs an options list, out of scope for an inline row.
-type SimpleFieldType = "text" | "textarea" | "number" | "date" | "image" | "checkbox";
-const CUSTOM_FIELD_TYPES: SimpleFieldType[] = ["text", "textarea", "number", "date", "image", "checkbox"];
+// "select" needs an options list and "repeater" needs a sub-field list,
+// both out of scope for an inline row (use the full Feature Catalog editor
+// for those instead).
+type SimpleFieldType = "text" | "textarea" | "number" | "date" | "image" | "list" | "checkbox";
+const CUSTOM_FIELD_TYPES: SimpleFieldType[] = ["text", "textarea", "number", "date", "image", "list", "checkbox"];
 
 function suggestFieldType(discoveredType: DiscoveredField["type"]): SimpleFieldType {
   if (discoveredType === "number") return "number";
   if (discoveredType === "boolean") return "checkbox";
   if (discoveredType === "date") return "date";
-  return "text"; // string, array, object
+  if (discoveredType === "array") return "list";
+  return "text"; // string, object
 }
 
 function suggestKeyAndLabel(path: string): { key: string; label: string } {
@@ -892,7 +895,7 @@ function IntegrationEditForm({
       setCustomFieldDraft(null);
       showToast(`"${newField.label}" added to ${current.featureLabel}`);
     } catch (err) {
-      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not create field.") : "Could not create field.");
+      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not create field.") : "Could not create field.", "error");
     }
   }
 

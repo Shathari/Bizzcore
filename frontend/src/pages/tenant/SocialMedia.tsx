@@ -103,7 +103,7 @@ function PostScheduler() {
     try {
       setPosts(await listSocialPosts());
     } catch {
-      showToast("Could not load posts.");
+      showToast("Could not load posts.", "error");
     }
   }
 
@@ -117,7 +117,7 @@ function PostScheduler() {
       showToast("Post canceled");
       load();
     } catch {
-      showToast("Could not cancel post.");
+      showToast("Could not cancel post.", "error");
     }
   }
 
@@ -337,7 +337,7 @@ function CommentsSection() {
     try {
       setComments(await listSocialComments());
     } catch {
-      showToast("Could not load comments.");
+      showToast("Could not load comments.", "error");
     }
   }
 
@@ -359,7 +359,7 @@ function CommentsSection() {
       setReplyDrafts((d) => ({ ...d, [id]: "" }));
       load();
     } catch {
-      showToast("Could not send reply.");
+      showToast("Could not send reply.", "error");
     } finally {
       setSending(null);
     }
@@ -428,7 +428,7 @@ function DmsSection() {
       setConversations(merged);
       if (!selectedId && merged.length > 0) setSelectedId(merged[0].id);
     } catch {
-      showToast("Could not load DMs.");
+      showToast("Could not load DMs.", "error");
     }
   }
 
@@ -441,7 +441,7 @@ function DmsSection() {
     setMessages(null);
     getMessages(selectedId)
       .then(setMessages)
-      .catch(() => showToast("Could not load conversation."));
+      .catch(() => showToast("Could not load conversation.", "error"));
   }, [selectedId]);
 
   const selected = conversations?.find((c) => c.id === selectedId) ?? null;
@@ -456,7 +456,7 @@ function DmsSection() {
       setDraft("");
       load();
     } catch {
-      showToast("Could not send message.");
+      showToast("Could not send message.", "error");
     } finally {
       setSending(false);
     }

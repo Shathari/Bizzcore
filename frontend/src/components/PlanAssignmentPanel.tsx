@@ -57,14 +57,14 @@ export function PlanAssignmentPanel({
     try {
       setOverrides(await listTenantOverrides(tenantId));
     } catch {
-      showToast("Could not load feature overrides.");
+      showToast("Could not load feature overrides.", "error");
     }
   }
 
   useEffect(() => {
     listPlans()
       .then(setPlans)
-      .catch(() => showToast("Could not load plans."));
+      .catch(() => showToast("Could not load plans.", "error"));
     loadOverrides();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId]);
@@ -80,7 +80,7 @@ export function PlanAssignmentPanel({
       showToast(selectedPlanId ? "Plan updated." : "Plan unassigned.");
       onChanged();
     } catch (err) {
-      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not change plan.") : "Could not change plan.");
+      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not change plan.") : "Could not change plan.", "error");
     } finally {
       setAssigning(false);
     }
@@ -93,7 +93,7 @@ export function PlanAssignmentPanel({
       await loadOverrides();
       showToast("Override removed.");
     } catch {
-      showToast("Could not remove override.");
+      showToast("Could not remove override.", "error");
     } finally {
       setRemovingKey(null);
     }
@@ -206,7 +206,7 @@ function AddOverrideModal({ tenantId, onClose, onSaved }: { tenantId: string; on
         setEntitlements(rows);
         if (rows.length > 0) setFeatureKey(rows[0].featureKey);
       })
-      .catch(() => showToast("Could not load the feature list."));
+      .catch(() => showToast("Could not load the feature list.", "error"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId]);
 

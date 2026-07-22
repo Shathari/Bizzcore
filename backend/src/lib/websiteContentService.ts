@@ -134,7 +134,7 @@ async function logAudit(actorId: string, action: string, tenantId: string, detai
   });
 }
 
-export type ActiveIntegration = Prisma.WebsiteIntegrationGetPayload<{ include: { endpoints: true } }> & {
+export type ActiveIntegration = Prisma.WebsiteIntegrationGetPayload<{ include: { endpoints: true; dataSource: true } }> & {
   feature: FeatureDefinition;
 };
 
@@ -143,7 +143,7 @@ export async function getActiveIntegration(tenantId: string, featureKey: string)
   if (!feature) return null;
   const integration = await prisma.websiteIntegration.findUnique({
     where: { tenantId_featureId: { tenantId, featureId: feature.id } }, // tenant-scoped
-    include: { endpoints: true },
+    include: { endpoints: true, dataSource: true },
   });
   if (!integration?.active) return null;
   return { ...integration, feature };
@@ -294,8 +294,15 @@ async function pushCreate(tenantId: string, integration: ActiveIntegration, data
   }
 
   const outgoingPayload = stripNonWriteEnabledConfidential(mediaResult.payload, confidentialFields, getConfidentialWriteEnabled(integration));
-  const result = await callWebsiteApi(fresh, "POST", null, outgoingPayload, { tenantId, contentType: integration.feature.key }, refresher);
-  await reconcileCredentialStatus(integration.id, fresh.credentialStatus, result.status);
+  const result = await callWebsiteApi(
+    { ...fresh, isSingleton: integration.feature.isSingleton },
+    "POST",
+    null,
+    outgoingPayload,
+    { tenantId, contentType: integration.feature.key },
+    refresher
+  );
+  await reconcileCredentialStatus(fresh, result.status);
   await logConnectorAccess({
     tenantId,
     featureId: integration.featureId,
@@ -384,7 +391,7 @@ async function pushRetryCreate(
 
   const outgoingPayload = stripNonWriteEnabledConfidential(mediaResult.payload, confidentialFields, getConfidentialWriteEnabled(integration));
   const result = await callWebsiteApi(
-    fresh,
+    { ...fresh, isSingleton: integration.feature.isSingleton },
     "POST",
     null,
     outgoingPayload,
@@ -395,7 +402,7 @@ async function pushRetryCreate(
     },
     refresher
   );
-  await reconcileCredentialStatus(integration.id, fresh.credentialStatus, result.status);
+  await reconcileCredentialStatus(fresh, result.status);
   await logConnectorAccess({
     tenantId,
     featureId: integration.featureId,
@@ -469,7 +476,7 @@ async function pushUpdate(
   }
 
   const result = await callWebsiteApi(
-    fresh,
+    { ...fresh, isSingleton: integration.feature.isSingleton },
     updateMethod,
     existingItem.externalId,
     mediaResult.payload,
@@ -480,7 +487,7 @@ async function pushUpdate(
     },
     refresher
   );
-  await reconcileCredentialStatus(integration.id, fresh.credentialStatus, result.status);
+  await reconcileCredentialStatus(fresh, result.status);
   await logConnectorAccess({
     tenantId,
     featureId: integration.featureId,
@@ -622,7 +629,7 @@ export async function deleteItem(tenantId: string, featureKey: string, id: strin
   const freshForDelete = await ensureFreshToken(integration, tenantId, actorId);
   const deleteRefresher = buildCredentialRefresher(freshForDelete, tenantId, actorId);
   const result = await callWebsiteApi(
-    freshForDelete,
+    { ...freshForDelete, isSingleton: integration.feature.isSingleton },
     "DELETE",
     existing.externalId,
     existingPayload,
@@ -633,7 +640,7 @@ export async function deleteItem(tenantId: string, featureKey: string, id: strin
     },
     deleteRefresher
   );
-  await reconcileCredentialStatus(integration.id, freshForDelete.credentialStatus, result.status);
+  await reconcileCredentialStatus(freshForDelete, result.status);
   await logConnectorAccess({
     tenantId,
     featureId: integration.featureId,
@@ -721,7 +728,7 @@ export async function importItems(
 
   if (integration.feature.isSingleton) {
     const result = await fetchWebsiteApiSingle(freshForImport, context, filters, importRefresher);
-    await reconcileCredentialStatus(integration.id, freshForImport.credentialStatus, result.status);
+    await reconcileCredentialStatus(freshForImport, result.status);
     if (!result.success || !result.item) {
       await logConnectorAccess({
         tenantId,
@@ -735,6 +742,18 @@ export async function importItems(
       return { ok: false, status: 502, error: result.error ?? "Import failed" };
     }
     const existing = await prisma.websiteContentItem.findFirst({ where: { tenantId, featureId: integration.featureId } });
+
+    // A row still `pending`/`failed` carries a local edit that was never
+    // confirmed to have reached the external site (e.g. it just failed a
+    // sync retry moments ago, in the same syncItems() call). Overwriting it
+    // here with whatever the external GET returns would silently discard
+    // that edit and report the loss as "synced" — contradicting the
+    // retry's own retriedFailed count. Leave it untouched; it stays queued
+    // for the next Sync Now.
+    if (existing && existing.syncStatus !== "synced") {
+      return { ok: true, imported: 0, skipped: 1, removed: 0, items: [serializeItem(existing, confidentialFields)] };
+    }
+
     const externalId = extractExternalId(result.item);
     const data = {
       externalId,
@@ -767,7 +786,7 @@ export async function importItems(
   }
 
   const result = await fetchWebsiteApi(freshForImport, context, filters, importRefresher);
-  await reconcileCredentialStatus(integration.id, freshForImport.credentialStatus, result.status);
+  await reconcileCredentialStatus(freshForImport, result.status);
   if (!result.success || !result.items) {
     await logConnectorAccess({
       tenantId,
@@ -814,6 +833,16 @@ export async function importItems(
         // its own row instead of double-matching this one.
         existing = slugCandidates.splice(candidateIndex, 1)[0];
       }
+    }
+
+    // Same "never clobber an unconfirmed local edit" rule as the deletion
+    // reconciliation below — this row already failed/pending a push (e.g.
+    // it just failed a retry in this same sync cycle), so overwriting it
+    // with the external GET's current data would silently drop that edit
+    // and mislabel it "synced". Leave it queued for the next retry instead.
+    if (existing && existing.syncStatus !== "synced") {
+      skipped += 1;
+      continue;
     }
 
     const data = {

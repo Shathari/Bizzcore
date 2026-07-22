@@ -10,9 +10,16 @@ import { apiClient } from "./client";
 export type WebsiteContentType = string;
 
 export type FieldDef =
-  | { key: string; label: string; type: "text" | "textarea" | "number" | "date" | "image"; required?: boolean }
+  | { key: string; label: string; type: "text" | "textarea" | "number" | "date" | "image" | "list"; required?: boolean }
   | { key: string; label: string; type: "select"; required?: boolean; options: string[] }
-  | { key: string; label: string; type: "checkbox" };
+  | { key: string; label: string; type: "checkbox" }
+  | {
+      key: string;
+      label: string;
+      type: "repeater";
+      required?: boolean;
+      itemFields: { key: string; label: string; type?: "text" | "textarea" }[];
+    };
 
 export type PermissionLevel = "VIEW" | "MANAGE";
 
