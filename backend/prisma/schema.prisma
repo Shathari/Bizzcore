@@ -17,7 +17,7 @@
 // serialized in application code on both providers.
 
 datasource db {
-  provider = "sqlite" // swap to "postgresql" for production
+  provider = "postgresql" // swap to "postgresql" for production
   url      = env("DATABASE_URL")
 }
 
