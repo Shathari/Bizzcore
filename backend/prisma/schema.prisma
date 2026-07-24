@@ -86,6 +86,19 @@ model Tenant {
   addOns                    TenantAddOn[]
   customDevelopmentRequests CustomDevelopmentRequest[]
   usageCounters             UsageCounter[]
+  invoices                  Invoice[]
+  payments                  Payment[]
+  manualGrants              ManualGrant[]              @relation("ManualGrantTenant")
+  // Points at whichever ManualGrant (if any) is currently driving planId/
+  // subscriptionStatus/currentPeriodEnd above. Null means the tenant's
+  // current state is either unpaid or a REAL payment, never a comp — this
+  // is the single check every report/UI surface uses to keep a manual
+  // grant from ever being counted as revenue or shown as indistinguishable
+  // from a paid subscription. Set when a grant is applied, cleared (and
+  // the tenant's prior real state restored from the grant's snapshot) when
+  // it expires or is revoked, or when a real payment supersedes it.
+  activeManualGrantId       String?                    @unique
+  activeManualGrant         ManualGrant?               @relation("ActiveManualGrant", fields: [activeManualGrantId], references: [id], onDelete: SetNull)
 
   @@index([status])
 }
@@ -108,6 +121,7 @@ model User {
   aiGenerations       AIGeneration[]
   auditLogActions     AuditLog[]           @relation("AuditLogActor")
   passwordResetTokens PasswordResetToken[]
+  manualGrantsGranted ManualGrant[]        @relation("ManualGrantGrantedBy")
 
   @@index([tenantId])
 }
@@ -813,8 +827,11 @@ model Plan {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  features PlanFeature[]
-  tenants  Tenant[]
+  features     PlanFeature[]
+  tenants      Tenant[]
+  invoices     Invoice[]
+  payments     Payment[]
+  manualGrants ManualGrant[]
 }
 
 model PlanFeature {
@@ -947,4 +964,111 @@ model UsageCounter {
 
   @@unique([tenantId, featureKey, periodStart])
   @@index([tenantId, featureKey])
+}
+
+// ---------------------------------------------------------------------------
+// Billing — real payments (Razorpay) + manual grants
+//
+// Two separate, never-conflated concepts: Payment (below) is money that
+// actually moved, confirmed server-to-server by a verified Razorpay
+// webhook — the real billing/audit trail. ManualGrant (below) is a Super
+// Admin comping a tenant access with no payment at all. Both can end with
+// the tenant looking "Active", but Tenant.activeManualGrantId is always
+// the ground truth for which one actually happened — every revenue report
+// and every UI surface showing subscription state must check it rather
+// than inferring from subscriptionStatus alone.
+// ---------------------------------------------------------------------------
+
+// Created when a tenant Admin starts Razorpay Checkout for a plan — before
+// payment succeeds or fails. Payment rows (below) reference back to
+// whichever Invoice they settled; an Invoice can end up with zero Payments
+// (abandoned/failed checkout) or, in principle, more than one if a retried
+// checkout on the same order eventually succeeds.
+model Invoice {
+  id              String   @id @default(cuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  planId          String
+  plan            Plan     @relation(fields: [planId], references: [id], onDelete: Restrict)
+  // ₹, snapshot of the plan's price at checkout time — Plan.priceMonthly/
+  // priceYearly can change later without rewriting billing history.
+  amount          Float
+  billingCycle    String // Monthly | Yearly
+  razorpayOrderId String   @unique
+  status          String   @default("Created") // Created | Paid | Failed | Cancelled
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  payments Payment[]
+
+  @@index([tenantId])
+}
+
+// One row per Razorpay payment CONFIRMED by a signature-verified webhook —
+// never created from a client-side/browser callback (see
+// routes/webhooks/razorpay.ts). razorpayPaymentId is unique so a retried
+// webhook delivery for the same payment is a no-op rather than a double
+// plan-extension. This is the tenant's real billing history; ManualGrant
+// below is deliberately a separate model so the two can never be confused
+// in a report.
+model Payment {
+  id                String   @id @default(cuid())
+  tenantId          String
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoiceId         String?
+  invoice           Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  planId            String
+  plan              Plan     @relation(fields: [planId], references: [id], onDelete: Restrict)
+  amount            Float
+  currency          String   @default("INR")
+  razorpayOrderId   String
+  razorpayPaymentId String   @unique
+  // Razorpay's per-payment HMAC signature from the webhook body — kept for
+  // audit/dispute purposes, not re-verified on read.
+  razorpaySignature String
+  status            String // Captured | Failed | Refunded
+  // Raw JSON of the webhook payload that produced this row — audit trail
+  // for a disputed or confusing payment; never parsed back at runtime.
+  rawWebhookPayload String?
+  createdAt         DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, createdAt])
+}
+
+// Super Admin granting a tenant N days of a plan with no real payment
+// (trial extension, beta comp, goodwill, etc.) — plan-only, no ad-hoc
+// feature overrides here; use TenantFeatureOverride for anything more
+// granular than a whole plan. previousPlanId/previousSubscriptionStatus/
+// previousPeriodEnd snapshot the tenant's real (pre-grant) state at the
+// moment the grant is applied, so expiry (see jobs/expireManualGrants.ts)
+// can restore it exactly — falling back to "no plan" rather than silently
+// leaving the tenant elevated if it never had a real paid state to return
+// to. `status` moves Active -> Expired (ran its course) or -> Revoked
+// (Super Admin ended it early); either way Tenant.activeManualGrantId is
+// cleared in the same operation.
+model ManualGrant {
+  id                    String  @id @default(cuid())
+  tenantId              String
+  tenant                Tenant  @relation("ManualGrantTenant", fields: [tenantId], references: [id], onDelete: Cascade)
+  grantedBySuperAdminId String
+  grantedBySuperAdmin   User    @relation("ManualGrantGrantedBy", fields: [grantedBySuperAdminId], references: [id], onDelete: Restrict)
+  planId                String?
+  plan                  Plan?   @relation(fields: [planId], references: [id], onDelete: SetNull)
+  durationDays          Int
+  reason                String
+  status                String  @default("Active") // Active | Expired | Revoked
+
+  previousPlanId             String?
+  previousSubscriptionStatus String?
+  previousPeriodEnd          DateTime?
+
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  activeForTenant Tenant? @relation("ActiveManualGrant")
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([status, expiresAt])
 }
