@@ -66,11 +66,11 @@ router.post("/login", loginRateLimiter, async (req, res) => {
   });
 
   res.cookie(COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: "lax",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-  });
+  httpOnly: true,
+  secure: isProduction,
+  sameSite: "none",
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+});
 
   await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
 
