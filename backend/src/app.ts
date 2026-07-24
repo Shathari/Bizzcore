@@ -21,6 +21,7 @@ import publicAdminUploadsRoutes from "./routes/publicAdminUploads";
 import superAdminSubscriptionsRoutes from "./routes/superAdminSubscriptions";
 import superAdminPlansRoutes from "./routes/superAdminPlans";
 import subscriptionRoutes from "./routes/subscription";
+import billingRoutes from "./routes/billing";
 import connectorLoginRoutes from "./routes/connectorLogin";
 import connectorConfigRoutes from "./routes/connectorConfig";
 import { UPLOADS_ROOT } from "./lib/upload";
@@ -69,6 +70,9 @@ export function createApp() {
   app.use("/api/super-admin", superAdminSubscriptionsRoutes);
   app.use("/api/super-admin", superAdminPlansRoutes);
   app.use("/api/subscription", subscriptionRoutes);
+  // Real-money checkout (Razorpay) — separate from the read-only
+  // /api/subscription surface above; see routes/billing.ts's file comment.
+  app.use("/api/billing", billingRoutes);
   // Connector configuration (base URL, auth type + credentials, endpoint
   // overrides, field mapping, schema discovery, Test Connection) is
   // tenant-Admin-owned — see routes/connectorConfig.ts. Super Admin's

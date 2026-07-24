@@ -18,6 +18,8 @@ import {
   type MyPlan,
   type MeteredFeatureKey,
 } from "../../api/subscription";
+import { startCheckout, listMyInvoices, type BillingCycle, type Invoice } from "../../api/billing";
+import { loadRazorpayCheckoutScript, openRazorpayCheckout } from "../../lib/razorpay";
 import type { PlanWithFeatures } from "../../api/superAdminPlans";
 import { CATEGORY_LABELS, groupByCategory } from "../../lib/planCategories";
 import { useToast } from "../../components/Toast";
@@ -78,6 +80,19 @@ function requestStatusStyle(status: RequestStatus): string {
   return "bg-red-50 text-red-700"; // Cancelled
 }
 
+function invoiceStatusStyle(status: Invoice["status"]): string {
+  if (status === "Paid") return "bg-emerald-50 text-emerald-700";
+  if (status === "Created") return "bg-amber-50 text-amber-700";
+  return "bg-red-50 text-red-700"; // Failed | Cancelled
+}
+
+function invoiceStatusLabel(status: Invoice["status"]): string {
+  // "Created" means the Razorpay order exists but no webhook has confirmed
+  // payment yet — see routes/billing.ts's file comment on why the client-
+  // side checkout callback alone never flips this.
+  return status === "Created" ? "Awaiting confirmation" : status;
+}
+
 export default function Subscription() {
   const { showToast } = useToast();
   const [myPlan, setMyPlan] = useState<MyPlan | null>(null);
@@ -95,8 +110,20 @@ export default function Subscription() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
+  const [invoices, setInvoices] = useState<Invoice[] | null>(null);
+  const [billingCycle, setBillingCycle] = useState<BillingCycle>("Monthly");
+  const [checkingOutPlanId, setCheckingOutPlanId] = useState<string | null>(null);
+
   async function loadRequests() {
     setMyRequests(await listMyCustomDevelopmentRequests());
+  }
+
+  async function loadInvoices() {
+    try {
+      setInvoices(await listMyInvoices());
+    } catch {
+      showToast("Could not load billing history.", "error");
+    }
   }
 
   useEffect(() => {
@@ -111,7 +138,45 @@ export default function Subscription() {
         if (types.length > 0) setServiceType(types[0].key);
       })
       .catch(() => setError("Could not load subscription details."));
+    loadInvoices();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function handlePay(plan: PlanWithFeatures) {
+    setCheckingOutPlanId(plan.id);
+    try {
+      await loadRazorpayCheckoutScript();
+      const session = await startCheckout(plan.id, billingCycle);
+      openRazorpayCheckout(
+        {
+          key: session.keyId,
+          amount: session.amount,
+          currency: session.currency,
+          order_id: session.orderId,
+          name: "BizzCore",
+          description: `${session.plan.name} — ${session.billingCycle}`,
+          prefill: { name: session.prefill.name, email: session.prefill.email, contact: session.prefill.contact },
+          theme: { color: "#7A1F2B" },
+          handler: () => {
+            // Checkout completing here is only a UI signal — it is NOT
+            // proof of payment (that could be spoofed client-side). The
+            // Invoice stays "Created"/Pending until Razorpay's
+            // signature-verified webhook confirms it server-to-server.
+            showToast("Payment submitted — we're confirming it now. This can take a few seconds.");
+            loadInvoices();
+          },
+          modal: {
+            ondismiss: () => setCheckingOutPlanId(null),
+          },
+        },
+        (message) => showToast(message, "error")
+      );
+    } catch (err) {
+      showToast(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not start checkout.") : "Could not start checkout.", "error");
+    } finally {
+      setCheckingOutPlanId(null);
+    }
+  }
 
   const activeAddOnIds = new Set((myAddOns ?? []).filter((a) => a.status === "Active").map((a) => a.addOnId));
   const selectedInfo = serviceTypes?.find((s) => s.key === serviceType);
@@ -224,6 +289,86 @@ export default function Subscription() {
             ))}
           </div>
         )}
+      </Card>
+
+      <Card className="mt-6">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 className="font-serif text-lg text-neutral-900">Change your plan</h2>
+            <p className="mt-1 text-sm text-neutral-500">Pick a plan and pay securely with Razorpay — cards, UPI, netbanking, and wallets.</p>
+          </div>
+          <div className="flex rounded-xl border border-neutral-200 p-1">
+            {(["Monthly", "Yearly"] as BillingCycle[]).map((cycle) => (
+              <button
+                key={cycle}
+                type="button"
+                onClick={() => setBillingCycle(cycle)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                  billingCycle === cycle ? "bg-maroon text-white" : "text-neutral-600 hover:text-maroon"
+                }`}
+              >
+                {cycle}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {comparablePlans === null && <p className="text-sm text-neutral-400">Loading…</p>}
+          {comparablePlans?.map((p) => {
+            const isCurrent = p.id === myPlan?.plan?.id;
+            const price = billingCycle === "Monthly" ? p.priceMonthly : p.priceYearly;
+            return (
+              <div
+                key={p.id}
+                className={`rounded-xl border p-4 ${isCurrent ? "border-maroon bg-maroon/5" : "border-neutral-200"}`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-serif text-base text-neutral-900">{p.name}</p>
+                  {p.isFeatured && <span className="rounded-full bg-gold/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-maroon">Popular</span>}
+                </div>
+                {p.description && <p className="mt-1 text-xs text-neutral-500">{p.description}</p>}
+                <p className="mt-3 text-lg font-semibold text-neutral-900">
+                  ₹{price.toLocaleString("en-IN")}
+                  <span className="text-xs font-normal text-neutral-500">{billingCycle === "Monthly" ? "/mo" : "/yr"}</span>
+                </p>
+                <div className="mt-4">
+                  {isCurrent ? (
+                    <span className="inline-flex rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700">Current plan</span>
+                  ) : (
+                    <Button className="w-full" disabled={checkingOutPlanId === p.id} onClick={() => handlePay(p)}>
+                      {checkingOutPlanId === p.id ? "Opening checkout…" : `Pay ₹${price.toLocaleString("en-IN")}`}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      <Card className="mt-6">
+        <h2 className="font-serif text-lg text-neutral-900">Billing history</h2>
+        <p className="mt-1 text-sm text-neutral-500">Every checkout you've started, and its confirmed status.</p>
+        <div className="mt-4 space-y-2">
+          {invoices === null && <p className="text-sm text-neutral-400">Loading…</p>}
+          {invoices?.length === 0 && <p className="text-sm text-neutral-400">No payments yet.</p>}
+          {invoices?.map((inv) => (
+            <div key={inv.id} className="flex items-center justify-between border-b border-neutral-100 pb-3 last:border-0 last:pb-0">
+              <div>
+                <p className="text-sm font-medium text-neutral-900">
+                  {inv.plan.name} <span className="text-neutral-500">· {inv.billingCycle}</span>
+                </p>
+                <p className="mt-0.5 text-xs text-neutral-500">
+                  ₹{inv.amount.toLocaleString("en-IN")} · {formatDate(inv.createdAt)}
+                </p>
+              </div>
+              <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${invoiceStatusStyle(inv.status)}`}>
+                {invoiceStatusLabel(inv.status)}
+              </span>
+            </div>
+          ))}
+        </div>
       </Card>
 
       <Card className="mt-6">

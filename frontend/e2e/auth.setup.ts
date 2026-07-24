@@ -15,7 +15,8 @@ const superAdminState = path.join(__dirname, ".auth", "super-admin.json");
 // itself, so it logs in fresh rather than using these saved states.
 setup("authenticate as tenant admin", async ({ page }) => {
   await page.goto("/login");
-  await page.getByRole("button", { name: /Kaleri Saree \(Admin\)/ }).click();
+  await page.locator("#email").fill("owner@kalerisaree.com");
+  await page.locator("#password").fill("Kaleri@123");
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL("http://localhost:5173/");
   await page.context().storageState({ path: tenantAdminState });
@@ -23,7 +24,8 @@ setup("authenticate as tenant admin", async ({ page }) => {
 
 setup("authenticate as super admin", async ({ page }) => {
   await page.goto("/login");
-  await page.getByRole("button", { name: /Super Admin/ }).click();
+  await page.locator("#email").fill("platform-admin@kalericonsole.com");
+  await page.locator("#password").fill("SuperAdmin@123");
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/super-admin$/);
   await page.context().storageState({ path: superAdminState });

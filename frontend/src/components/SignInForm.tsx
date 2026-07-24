@@ -3,18 +3,23 @@ import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { useAuth } from "../context/AuthContext";
 
-// Local dev / demo fixtures only — never rendered against a real deployment
-// with real tenant credentials.
-const DEMO_CREDENTIALS = [
-  { label: "Super Admin", email: "platform-admin@kalericonsole.com", password: "SuperAdmin@123" },
-  { label: "Kaleri Saree (Admin)", email: "owner@kalerisaree.com", password: "Kaleri@123" },
-  {
-    label: "Rangoli Threads (Admin — forces password change)",
-    email: "owner@rangolithreads.com",
-    password: "Rangoli@Temp123",
-  },
-  { label: "Meridian Commerce (Admin)", email: "owner@meridiancommerce.com", password: "Meridian@123" },
-];
+// Local dev only — matches prisma/seed.ts's demo fixtures, which that
+// script itself refuses to create against a production environment (see
+// its assertNotProduction guard). import.meta.env.DEV is statically false
+// in any production Vite build, so this whole block (including the box
+// below) is dead-code-eliminated from what actually ships — not just
+// hidden by a runtime check.
+const DEMO_CREDENTIALS = import.meta.env.DEV
+  ? [
+      { label: "Super Admin", email: "platform-admin@kalericonsole.com", password: "SuperAdmin@123" },
+      { label: "Kaleri Saree (Admin)", email: "owner@kalerisaree.com", password: "Kaleri@123" },
+      {
+        label: "Rangoli Threads (Admin — forces password change)",
+        email: "owner@rangolithreads.com",
+        password: "Rangoli@Temp123",
+      },
+    ]
+  : [];
 
 // Shared by pages/tenant/Login.tsx (the bare /login page, still the
 // redirect target for an unauthenticated visit to any protected route) and
@@ -121,22 +126,24 @@ export function SignInForm() {
         </button>
       </form>
 
-      <div className="mt-8 rounded-xl border border-neutral-200 bg-cream/60 p-4">
-        <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Demo credentials</p>
-        <ul className="mt-2 space-y-2">
-          {DEMO_CREDENTIALS.map((cred) => (
-            <li key={cred.email}>
-              <button
-                type="button"
-                onClick={() => fillDemo(cred.email, cred.password)}
-                className="w-full text-left text-xs text-neutral-600 hover:text-maroon"
-              >
-                <span className="font-medium text-neutral-800">{cred.label}:</span> {cred.email} / {cred.password}
-              </button>
-            </li>
-          ))}
-        </ul>
-      </div>
+      {import.meta.env.DEV && (
+        <div className="mt-8 rounded-xl border border-neutral-200 bg-cream/60 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Demo credentials</p>
+          <ul className="mt-2 space-y-2">
+            {DEMO_CREDENTIALS.map((cred) => (
+              <li key={cred.email}>
+                <button
+                  type="button"
+                  onClick={() => fillDemo(cred.email, cred.password)}
+                  className="w-full text-left text-xs text-neutral-600 hover:text-maroon"
+                >
+                  <span className="font-medium text-neutral-800">{cred.label}:</span> {cred.email} / {cred.password}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

@@ -64,7 +64,28 @@ async function mapWebsiteFeature(
   }
 }
 
+// This seeds a hardcoded Super Admin (weak, well-known password) and two
+// demo tenants with fully fake business data — local dev / test fixtures
+// only. Refuses to run against anything that looks like a real deployment
+// unless explicitly overridden, so "someone ran `npm run seed` against the
+// wrong DATABASE_URL" can't silently plant a working demo login in
+// production. Use prisma/scripts/createSuperAdmin.ts for a real Super Admin
+// instead — that's the only supported production provisioning path.
+function assertNotProduction() {
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_DEMO_SEED_IN_PRODUCTION !== "true") {
+    console.error(
+      "Refusing to run the demo seed with NODE_ENV=production. This would create a hardcoded Super Admin " +
+        "(platform-admin@kalericonsole.com / SuperAdmin@123) and demo tenants with known passwords.\n" +
+        "If you really mean to seed demo data into this environment (e.g. a sales-demo instance, not real " +
+        "production), set ALLOW_DEMO_SEED_IN_PRODUCTION=true and re-run.\n" +
+        "To provision a real Super Admin instead, run: npm run super-admin:create -- --email you@yourcompany.com"
+    );
+    process.exit(1);
+  }
+}
+
 async function main() {
+  assertNotProduction();
   console.log("Seeding demo data into two isolated tenants...");
 
   await seedBuiltInFeatures(prisma);
@@ -95,7 +116,6 @@ async function main() {
       ownerEmail: "owner@kalerisaree.com",
       ownerPhone: "+919810000001",
       status: "Active",
-      plan: null,
     },
   });
 
@@ -390,7 +410,6 @@ async function main() {
       ownerEmail: "owner@rangolithreads.com",
       ownerPhone: "+919822000002",
       status: "Active",
-      plan: null,
     },
   });
 

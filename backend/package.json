@@ -11,6 +11,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "seed": "tsx prisma/seed.ts",
+    "super-admin:create": "tsx prisma/scripts/createSuperAdmin.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -30,6 +31,7 @@
     "openai": "^4.68.0",
     "pino": "^9.4.0",
     "pino-http": "^10.3.0",
+    "razorpay": "^2.9.8",
     "xlsx": "^0.18.5",
     "zod": "^3.23.8"
   },
