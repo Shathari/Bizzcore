@@ -12,6 +12,7 @@ import ResetPassword from "./pages/tenant/ResetPassword";
 import ChangePassword from "./pages/tenant/ChangePassword";
 import Home from "./pages/tenant/Home";
 import Customers from "./pages/tenant/Customers";
+import BookingRequests from "./pages/tenant/BookingRequests";
 import Communication from "./pages/tenant/Communication";
 import Website from "./pages/tenant/Website";
 import SocialMedia from "./pages/tenant/SocialMedia";
@@ -77,6 +78,7 @@ export default function App() {
             >
               <Route index element={<Home />} />
               <Route path="customers" element={<Customers />} />
+              <Route path="booking-requests" element={<BookingRequests />} />
               <Route path="communication" element={<Communication />} />
               <Route path="website" element={<Website />} />
               <Route path="social-media" element={<SocialMedia />} />

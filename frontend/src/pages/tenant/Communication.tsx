@@ -14,12 +14,11 @@ import {
   type Broadcast,
 } from "../../api/communication";
 import { listCustomers, type Customer, type Segment } from "../../api/customers";
+import { listCustomerCategories, type CustomerCategory } from "../../api/customerCategories";
 import { useToast } from "../../components/Toast";
 import { Button } from "../../components/Button";
 import { Modal } from "../../components/Modal";
 import { Table, TableHead, TableBody, TableRow, Th, Td } from "../../components/Table";
-
-const SEGMENTS: Segment[] = ["Regular", "VIP", "Bridal"];
 
 const CHANNEL_META: Record<Channel, { label: string; icon: typeof MessageCircle; color: string }> = {
   WHATSAPP: { label: "WhatsApp", icon: MessageCircle, color: "text-emerald-600" },
@@ -351,9 +350,10 @@ function NewBroadcastModal({
 }) {
   const [caption, setCaption] = useState("");
   const [targetType, setTargetType] = useState<"segment" | "customer">("segment");
-  const [segment, setSegment] = useState<Segment>("VIP");
+  const [segment, setSegment] = useState<Segment>("");
   const [customerId, setCustomerId] = useState("");
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [categories, setCategories] = useState<CustomerCategory[]>([]);
   const [scheduledAt, setScheduledAt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -361,13 +361,19 @@ function NewBroadcastModal({
   useEffect(() => {
     if (open) {
       listCustomers().then(setCustomers).catch(() => {});
+      listCustomerCategories()
+        .then((cats) => {
+          setCategories(cats);
+          setSegment((prev) => prev || cats.find((c) => c.isPriority)?.name || cats[0]?.name || "");
+        })
+        .catch(() => {});
     }
   }, [open]);
 
   function resetAndClose() {
     setCaption("");
     setTargetType("segment");
-    setSegment("VIP");
+    setSegment("");
     setCustomerId("");
     setScheduledAt("");
     setError(null);
@@ -379,6 +385,10 @@ function NewBroadcastModal({
     setError(null);
     if (targetType === "customer" && !customerId) {
       setError("Choose a customer to message.");
+      return;
+    }
+    if (targetType === "segment" && !segment) {
+      setError("Choose a category to message.");
       return;
     }
     setSubmitting(true);
@@ -444,9 +454,9 @@ function NewBroadcastModal({
             onChange={(e) => setSegment(e.target.value as Segment)}
             className="w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
           >
-            {SEGMENTS.map((s) => (
-              <option key={s} value={s}>
-                {s}
+            {categories.map((c) => (
+              <option key={c.id} value={c.name}>
+                {c.name}
               </option>
             ))}
           </select>

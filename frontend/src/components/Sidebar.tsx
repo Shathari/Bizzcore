@@ -1,9 +1,10 @@
 import { NavLink } from "react-router-dom";
-import { Home, Users, MessageSquare, Globe, Share2, Wand2, CreditCard, Settings as SettingsIcon, Sparkles } from "lucide-react";
+import { Home, Users, MessageSquare, Globe, Share2, Wand2, CreditCard, Settings as SettingsIcon, Sparkles, CalendarCheck } from "lucide-react";
 
 const NAV_ITEMS = [
   { to: "/dashboard", label: "Home", icon: Home, end: true },
   { to: "/dashboard/customers", label: "Customers", icon: Users, end: false },
+  { to: "/dashboard/booking-requests", label: "Booking Requests", icon: CalendarCheck, end: false },
   { to: "/dashboard/communication", label: "Communication", icon: MessageSquare, end: false },
   { to: "/dashboard/website", label: "Website", icon: Globe, end: false },
   { to: "/dashboard/social-media", label: "Social Media", icon: Share2, end: false },

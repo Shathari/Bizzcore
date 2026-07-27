@@ -1,12 +1,12 @@
 import { Sparkles, Users, Globe2, Share2, MessageCircle, Mail } from "lucide-react";
 import { SignInForm } from "../components/SignInForm";
 
-// Placeholder contact details — layout only, per the "show me the layout
-// before wiring real contact links" instruction. Replace both once the
-// real WhatsApp Business number and support inbox are confirmed.
+// WHATSAPP_NUMBER is still a placeholder — layout only, per the "show me
+// the layout before wiring real contact links" instruction. Replace it
+// once the real WhatsApp Business number is confirmed.
 const WHATSAPP_NUMBER = "919000000000"; // digits only, no "+", for the wa.me link
 const WHATSAPP_MESSAGE = "Hi! I'd like to get started with BizzCore.";
-const CONTACT_EMAIL = "hello@bizzcore.example";
+const CONTACT_EMAIL = "bizzcore225@gmail.com";
 
 const WHATSAPP_HREF = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(WHATSAPP_MESSAGE)}`;
 

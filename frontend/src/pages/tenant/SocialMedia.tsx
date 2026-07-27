@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import axios from "axios";
-import { Instagram, Facebook, Send } from "lucide-react";
+import { Instagram, Facebook, Send, Sparkles } from "lucide-react";
 import {
   getIntegrationStatus,
   listSocialPosts,
@@ -13,6 +13,7 @@ import {
   type PostType,
   type SocialComment,
 } from "../../api/social";
+import { generateContent, getAIStatus, TONES, type ContentType, type Tone } from "../../api/ai";
 import { listConversations, getMessages, sendMessage, type ConversationSummary, type Message } from "../../api/communication";
 import { useToast } from "../../components/Toast";
 import { Button } from "../../components/Button";
@@ -30,6 +31,16 @@ const CHANNEL_ICON: Record<SocialChannel, typeof Instagram> = {
 const CHANNEL_COLOR: Record<SocialChannel, string> = {
   INSTAGRAM: "text-pink-600",
   FACEBOOK: "text-blue-600",
+};
+
+// Reuses the AI Marketing Assistant's own content types (routes/ai.ts) so
+// "AI Suggest Caption" here is just a differently-scoped entry point into
+// the exact same /api/ai/generate call — same usage metering
+// (AI_CONTENT_GENERATION), same OPENAI_API_KEY gate, nothing social-post-
+// specific on the backend.
+const CHANNEL_CONTENT_TYPE: Record<SocialChannel, ContentType> = {
+  INSTAGRAM: "Instagram Caption",
+  FACEBOOK: "Facebook Post",
 };
 
 function formatTime(iso: string) {
@@ -208,6 +219,21 @@ function NewPostModal({ open, onClose, onCreated }: { open: boolean; onClose: ()
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [aiTone, setAiTone] = useState<Tone>("Playful");
+  const [aiProductName, setAiProductName] = useState("");
+  const [aiContext, setAiContext] = useState("");
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    getAIStatus()
+      .then((s) => setAiConfigured(s.configured))
+      .catch(() => setAiConfigured(false));
+  }, [open]);
+
   function resetAndClose() {
     setChannel("INSTAGRAM");
     setPostType("POST");
@@ -215,7 +241,36 @@ function NewPostModal({ open, onClose, onCreated }: { open: boolean; onClose: ()
     setMedia(null);
     setScheduledAt("");
     setError(null);
+    setAiPanelOpen(false);
+    setAiTone("Playful");
+    setAiProductName("");
+    setAiContext("");
+    setAiError(null);
     onClose();
+  }
+
+  // Suggestion-only: fills the caption field for the user to review/edit
+  // before scheduling — never calls createSocialPost or touches
+  // SCHEDULED_POSTS usage. The only side effect is the AI_CONTENT_GENERATION
+  // usage unit /api/ai/generate itself already spends on a successful call,
+  // same as generating from the AI Marketing Assistant page.
+  async function handleAiGenerate() {
+    setAiError(null);
+    setAiGenerating(true);
+    try {
+      const result = await generateContent({
+        contentType: CHANNEL_CONTENT_TYPE[channel],
+        tone: aiTone,
+        productName: aiProductName || undefined,
+        context: aiContext || undefined,
+      });
+      setCaption(result.output);
+      setAiPanelOpen(false);
+    } catch (err) {
+      setAiError(axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not generate a caption.") : "Could not generate a caption.");
+    } finally {
+      setAiGenerating(false);
+    }
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -269,13 +324,80 @@ function NewPostModal({ open, onClose, onCreated }: { open: boolean; onClose: ()
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-neutral-700">Caption</label>
+          <div className="flex items-center justify-between">
+            <label className="block text-sm font-medium text-neutral-700">Caption</label>
+            <button
+              type="button"
+              onClick={() => setAiPanelOpen((v) => !v)}
+              disabled={aiConfigured === false}
+              title={aiConfigured === false ? "AI Assistant isn't configured for this business yet" : undefined}
+              className="flex items-center gap-1.5 text-xs font-semibold text-maroon hover:underline disabled:cursor-not-allowed disabled:text-neutral-300 disabled:no-underline"
+            >
+              <Sparkles className="h-3.5 w-3.5" /> AI Suggest Caption
+            </button>
+          </div>
           <textarea
             rows={3}
             value={caption}
             onChange={(e) => setCaption(e.target.value)}
             className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
           />
+
+          {aiPanelOpen && (
+            <div className="mt-2 space-y-3 rounded-xl border border-gold/40 bg-gold/5 p-3">
+              <p className="text-xs text-neutral-500">
+                Generates a {channel === "INSTAGRAM" ? "Instagram" : "Facebook"}-style caption from the AI Marketing
+                Assistant — review it before scheduling.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-neutral-700">Tone</label>
+                  <select
+                    value={aiTone}
+                    onChange={(e) => setAiTone(e.target.value as Tone)}
+                    className="mt-1 w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+                  >
+                    {TONES.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-neutral-700">Product / saree name</label>
+                  <input
+                    value={aiProductName}
+                    onChange={(e) => setAiProductName(e.target.value)}
+                    placeholder="Optional"
+                    className="mt-1 w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-neutral-700">Context / details</label>
+                <textarea
+                  rows={2}
+                  value={aiContext}
+                  onChange={(e) => setAiContext(e.target.value)}
+                  placeholder="e.g. new Kanjivaram collection, Diwali sale"
+                  className="mt-1 w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+                />
+              </div>
+              {aiError && (
+                <p className="text-xs text-red-600" role="alert">
+                  {aiError}
+                </p>
+              )}
+              <div className="flex justify-end">
+                <Button type="button" onClick={handleAiGenerate} disabled={aiGenerating}>
+                  <span className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4" /> {aiGenerating ? "Generating…" : "Generate"}
+                  </span>
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div>

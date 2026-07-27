@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { MessageCircle, Eye, UserPlus, Clock, Phone, type LucideIcon } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
@@ -55,7 +55,7 @@ export default function Home() {
       {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
 
       <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard icon={MessageCircle} label="Today's Inquiries" value={summary?.todaysInquiries} />
+        <StatCard icon={MessageCircle} label="Today's Inquiries" value={summary?.todaysInquiries} to="/dashboard/booking-requests" />
         <StatCard icon={Eye} label="Website Visitors" value={summary?.websiteVisitorsToday} />
         <StatCard icon={UserPlus} label="New Customers" value={summary?.newCustomersToday} />
         <StatCard icon={Clock} label="Pending Follow-ups" value={summary?.pendingFollowUps} />
@@ -78,7 +78,7 @@ export default function Home() {
 
       <Card className="mt-6">
         <h2 className="font-serif text-lg text-neutral-900">Priority follow-ups</h2>
-        <p className="mt-1 text-sm text-neutral-500">VIP and Bridal customers due for outreach.</p>
+        <p className="mt-1 text-sm text-neutral-500">Customers in a priority category (see Settings) due for outreach.</p>
         <div className="mt-4 space-y-3">
           {summary?.priorityFollowUps.length === 0 && (
             <p className="text-sm text-neutral-400">Nothing needs attention right now.</p>
@@ -95,13 +95,11 @@ export default function Home() {
                   <span>· Last purchase: {formatDate(c.lastPurchase)}</span>
                 </p>
               </div>
-              <span
-                className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                  c.segment === "Bridal" ? "bg-gold/20 text-maroon" : "bg-maroon/10 text-maroon"
-                }`}
-              >
-                {c.segment}
-              </span>
+              {/* Every row here is already priority-filtered server-side
+                  (routes/dashboard.ts), so one consistent style is enough —
+                  no per-name special case needed now that categories are
+                  tenant-defined rather than a fixed VIP/Bridal pair. */}
+              <span className="rounded-full bg-maroon/10 px-2.5 py-0.5 text-xs font-medium text-maroon">{c.segment}</span>
             </div>
           ))}
         </div>
@@ -163,18 +161,23 @@ function FollowUpCallAction({ customerId, phoneMasked }: { customerId: string; p
   );
 }
 
-function StatCard({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value?: number }) {
-  return (
-    <Card>
-      <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-maroon/10 text-maroon">
-          <Icon className="h-5 w-5" />
-        </div>
-        <div>
-          <p className="text-xs uppercase tracking-wide text-neutral-400">{label}</p>
-          <p className="text-xl font-semibold text-neutral-900">{value ?? "—"}</p>
-        </div>
+function StatCard({ icon: Icon, label, value, to }: { icon: LucideIcon; label: string; value?: number; to?: string }) {
+  const content = (
+    <div className="flex items-center gap-3">
+      <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-maroon/10 text-maroon">
+        <Icon className="h-5 w-5" />
       </div>
-    </Card>
+      <div>
+        <p className="text-xs uppercase tracking-wide text-neutral-400">{label}</p>
+        <p className="text-xl font-semibold text-neutral-900">{value ?? "—"}</p>
+      </div>
+    </div>
+  );
+  return to ? (
+    <Link to={to}>
+      <Card className="transition hover:border-maroon/30 hover:shadow-md">{content}</Card>
+    </Link>
+  ) : (
+    <Card>{content}</Card>
   );
 }

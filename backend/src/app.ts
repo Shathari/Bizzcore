@@ -22,8 +22,12 @@ import superAdminSubscriptionsRoutes from "./routes/superAdminSubscriptions";
 import superAdminPlansRoutes from "./routes/superAdminPlans";
 import subscriptionRoutes from "./routes/subscription";
 import billingRoutes from "./routes/billing";
+import razorpayWebhookRoutes from "./routes/webhooks/razorpay";
 import connectorLoginRoutes from "./routes/connectorLogin";
 import connectorConfigRoutes from "./routes/connectorConfig";
+import inquiryRoutes from "./routes/inquiries";
+import publicInquiriesRoutes from "./routes/publicInquiries";
+import customerCategoryRoutes from "./routes/customerCategories";
 import { UPLOADS_ROOT } from "./lib/upload";
 
 // Builds and configures the Express app with no side effects (no
@@ -40,6 +44,15 @@ export function createApp() {
       credentials: true,
     })
   );
+  // Mounted BEFORE express.json(): Razorpay's webhook signature is an HMAC
+  // over the exact raw request bytes, so this route needs the unparsed
+  // Buffer body — running it through express.json() first and
+  // re-serializing would produce a different signature and always fail
+  // verification. No auth middleware here by design; the verified
+  // signature (checked inside the route) IS the authentication, since
+  // Razorpay calls this server-to-server with no session/JWT of its own.
+  app.use("/api/webhooks/razorpay", express.raw({ type: "application/json" }), razorpayWebhookRoutes);
+
   app.use(express.json());
   app.use(cookieParser());
   if (process.env.NODE_ENV !== "test") {
@@ -58,6 +71,7 @@ export function createApp() {
   app.use("/api/auth", authRoutes);
   app.use("/api/auth", passwordResetRoutes);
   app.use("/api/customers", customerRoutes);
+  app.use("/api/customer-categories", customerCategoryRoutes);
   app.use("/api/super-admin", superAdminRoutes);
   app.use("/api/dashboard", dashboardRoutes);
   app.use("/api/communication", communicationRoutes);
@@ -84,6 +98,12 @@ export function createApp() {
   app.use("/api/connector-config", connectorConfigRoutes);
   app.use("/api/connector-login", connectorLoginRoutes);
   app.use("/api/website-content", websiteContentRoutes);
+  app.use("/api/inquiries", inquiryRoutes);
+  // Booking-request/inquiry submission from a tenant's own external website
+  // widget — unauthenticated by design, tenantId in the URL (see
+  // routes/publicInquiries.ts's file comment); not mounted under /api/mock-
+  // external-site since it's a real endpoint tenants embed, not a demo stand-in.
+  app.use("/api/public/inquiries", publicInquiriesRoutes);
   app.use("/api/mock-external-site", mockExternalSiteRoutes);
   // Local dev/demo reference implementation of the standardized media-sync
   // upload contract every tenant destination site now implements — see

@@ -15,6 +15,7 @@ import {
   type PiiField,
   type AccessLogEntry,
 } from "../../api/customers";
+import { listCustomerCategories, type CustomerCategory } from "../../api/customerCategories";
 import { useToast } from "../../components/Toast";
 import { Card } from "../../components/Card";
 import { Button } from "../../components/Button";
@@ -24,8 +25,6 @@ import { ImportCustomersModal } from "../../components/ImportCustomersModal";
 
 // How long a revealed value stays on screen before auto re-masking.
 const REVEAL_DISPLAY_MS = 18_000;
-
-const SEGMENTS: Segment[] = ["Regular", "VIP", "Bridal"];
 
 function formatDate(iso: string | null) {
   if (!iso) return "—";
@@ -40,13 +39,12 @@ function formatDateTime(iso: string) {
   return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function SegmentBadge({ segment }: { segment: Segment }) {
-  const styles: Record<Segment, string> = {
-    Regular: "bg-neutral-100 text-neutral-700",
-    VIP: "bg-maroon/10 text-maroon",
-    Bridal: "bg-gold/20 text-maroon",
-  };
-  return <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${styles[segment]}`}>{segment}</span>;
+// Styling keys off isPriority (a per-tenant, per-category toggle managed in
+// Settings — see api/customerCategories.ts) rather than a fixed name map,
+// since the category itself is no longer a fixed 3-value set.
+function SegmentBadge({ segment, isPriority }: { segment: Segment; isPriority: boolean }) {
+  const className = isPriority ? "bg-maroon/10 text-maroon" : "bg-neutral-100 text-neutral-700";
+  return <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${className}`}>{segment}</span>;
 }
 
 export default function Customers() {
@@ -63,6 +61,9 @@ export default function Customers() {
   const [exporting, setExporting] = useState(false);
   const [contactExportOpen, setContactExportOpen] = useState(false);
   const [contactExporting, setContactExporting] = useState(false);
+  const [categories, setCategories] = useState<CustomerCategory[]>([]);
+
+  const priorityNames = new Set(categories.filter((c) => c.isPriority).map((c) => c.name));
 
   async function load(params?: { search?: string; segment?: Segment }) {
     try {
@@ -73,8 +74,18 @@ export default function Customers() {
     }
   }
 
+  async function loadCategories() {
+    try {
+      setCategories(await listCustomerCategories());
+    } catch {
+      // Non-fatal — category-dependent UI (filter dropdown, priority
+      // styling) just falls back to an empty list until the next reload.
+    }
+  }
+
   useEffect(() => {
     load();
+    loadCategories();
   }, []);
 
   useEffect(() => {
@@ -164,9 +175,9 @@ export default function Customers() {
           className="rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
         >
           <option value="">All segments</option>
-          {SEGMENTS.map((s) => (
-            <option key={s} value={s}>
-              {s}
+          {categories.map((c) => (
+            <option key={c.id} value={c.name}>
+              {c.name}
             </option>
           ))}
         </select>
@@ -206,7 +217,7 @@ export default function Customers() {
                 <Td className="font-medium text-neutral-900">{c.name}</Td>
                 <Td className="text-neutral-600">{c.phoneMasked}</Td>
                 <Td>
-                  <SegmentBadge segment={c.segment} />
+                  <SegmentBadge segment={c.segment} isPriority={priorityNames.has(c.segment)} />
                 </Td>
                 <Td className="text-neutral-600">{formatCurrency(c.totalSpent)}</Td>
                 <Td className="text-neutral-600">{formatDate(c.lastPurchase)}</Td>
@@ -230,6 +241,7 @@ export default function Customers() {
 
       <AddCustomerModal
         open={addOpen}
+        categories={categories}
         onClose={() => setAddOpen(false)}
         onCreated={() => {
           setAddOpen(false);
@@ -243,7 +255,7 @@ export default function Customers() {
         onImported={() => load({ search: search || undefined, segment: segmentFilter || undefined })}
       />
 
-      <CustomerDetailModal customer={detailTarget} onClose={() => setDetailTarget(null)} />
+      <CustomerDetailModal customer={detailTarget} isPriority={detailTarget ? priorityNames.has(detailTarget.segment) : false} onClose={() => setDetailTarget(null)} />
 
       <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Delete customer">
         <p className="text-sm text-neutral-600">
@@ -282,10 +294,12 @@ export default function Customers() {
 
 function AddCustomerModal({
   open,
+  categories,
   onClose,
   onCreated,
 }: {
   open: boolean;
+  categories: CustomerCategory[];
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -357,9 +371,9 @@ function AddCustomerModal({
             onChange={(e) => setSegment(e.target.value as Segment)}
             className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
           >
-            {SEGMENTS.map((s) => (
-              <option key={s} value={s}>
-                {s}
+            {categories.map((c) => (
+              <option key={c.id} value={c.name}>
+                {c.name}
               </option>
             ))}
           </select>
@@ -496,7 +510,15 @@ function RecentAccessPanel({ customerId }: { customerId: string }) {
   );
 }
 
-function CustomerDetailModal({ customer, onClose }: { customer: Customer | null; onClose: () => void }) {
+function CustomerDetailModal({
+  customer,
+  isPriority,
+  onClose,
+}: {
+  customer: Customer | null;
+  isPriority: boolean;
+  onClose: () => void;
+}) {
   return (
     <Modal open={!!customer} onClose={onClose} title={customer?.name ?? "Customer"}>
       {customer && (
@@ -512,7 +534,7 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer | null;
           <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
             <div>
               <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">Segment</p>
-              <p className="mt-0.5"><SegmentBadge segment={customer.segment} /></p>
+              <p className="mt-0.5"><SegmentBadge segment={customer.segment} isPriority={isPriority} /></p>
             </div>
           </div>
           <div className="flex items-center justify-between border-b border-neutral-100 pb-3">

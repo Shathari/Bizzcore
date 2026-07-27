@@ -99,6 +99,31 @@ const generateSchema = z.object({
   context: z.string().trim().optional(),
 });
 
+// "Refine my idea" — turns a rough, unstructured idea into 2-3 well-
+// structured content briefs the user can pick from (and still edit) before
+// ever spending a real generation. Deliberately a separate instruction set
+// from BASE_SYSTEM_PROMPT/CONTENT_TYPE_INSTRUCTIONS above: this call's job
+// is to produce BETTER INPUT (a `context` string), not publishable copy.
+const REFINE_SYSTEM_PROMPT = `You help a marketer at an Indian ethnic-wear boutique ("BizzCore") turn a rough, half-formed idea into well-structured creative briefs. You are NOT writing the final marketing copy — you are writing 2-3 alternative, richer instructions that will later be handed to a copywriter AI as its brief.
+
+Given the rough idea plus the content type and tone it's meant for, produce 2-3 distinct briefs. Each brief should:
+- Be 1-3 sentences, specific and concrete (occasion, angle, detail, or hook the rough idea only implied)
+- Read as an instruction/context a copywriter would use, not as a finished caption or ad
+- Genuinely differ in angle from the other options (e.g. one festival/occasion-led, one product/craft-led, one urgency/offer-led), not just reworded restatements of each other
+
+Respond ONLY with strict JSON of the shape {"suggestions": ["...", "...", "..."]} — no other text.`;
+
+const refineSchema = z.object({
+  contentType: z.enum(CONTENT_TYPES),
+  tone: z.enum(TONES),
+  productName: z.string().trim().optional(),
+  rawIdea: z.string().trim().min(1, "Describe your idea first"),
+});
+
+const refineResponseSchema = z.object({
+  suggestions: z.array(z.string().trim().min(1)).min(2).max(3),
+});
+
 // A single shared counter for all 9 content types — the catalog has more
 // granular AI_* keys (AI_CAPTIONS, SEO_CONTENT, ...) but this is the only
 // real generation endpoint in the app, so splitting usage across keys that
@@ -185,6 +210,72 @@ router.post("/generate", async (req, res) => {
   await incrementUsage(req.tenantId!, AI_FEATURE_KEY);
 
   res.status(201).json(generation);
+});
+
+// Optional pre-step to /generate — never spends a usage unit (amount: 0),
+// since it produces a better `context` to generate from, not content
+// itself. Still gated on the feature being included in the plan at all
+// (same AI_FEATURE_KEY), so a tenant without AI Content Generation can't
+// use this as a side door around that gate.
+router.post("/refine", async (req, res) => {
+  const parsed = refineSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid input" });
+    return;
+  }
+
+  const usageCheck = await checkUsageLimit(req.tenantId!, AI_FEATURE_KEY, 0);
+  if (!usageCheck.allowed) {
+    res.status(403).json({
+      error: "Your current plan doesn't include AI Content Generation. Upgrade your plan to use it.",
+      code: "FEATURE_NOT_INCLUDED",
+      featureKey: AI_FEATURE_KEY,
+    });
+    return;
+  }
+
+  const openai = getClient();
+  if (!openai) {
+    res.status(503).json({ error: "AI Assistant is not configured. Set OPENAI_API_KEY in the backend environment." });
+    return;
+  }
+
+  const { contentType, tone, productName, rawIdea } = parsed.data;
+  const userMessage = [
+    `Content type: ${contentType}`,
+    `Tone: ${tone} — ${TONE_INSTRUCTIONS[tone]}`,
+    productName ? `Product/saree name: ${productName}` : undefined,
+    `Rough idea: ${rawIdea}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  let suggestions: string[];
+  try {
+    const completion = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+      messages: [
+        { role: "system", content: REFINE_SYSTEM_PROMPT },
+        { role: "user", content: userMessage },
+      ],
+      temperature: 0.9,
+      max_tokens: 500,
+      response_format: { type: "json_object" },
+    });
+    const raw = completion.choices[0]?.message?.content;
+    const parsedJson = raw ? JSON.parse(raw) : null;
+    const validated = refineResponseSchema.safeParse(parsedJson);
+    if (!validated.success) {
+      res.status(502).json({ error: "AI Assistant returned an unexpected response. Please try again." });
+      return;
+    }
+    suggestions = validated.data.suggestions;
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : "Could not refine this idea" });
+    return;
+  }
+
+  res.json({ suggestions });
 });
 
 export default router;

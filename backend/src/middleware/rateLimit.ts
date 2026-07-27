@@ -80,6 +80,24 @@ export const bulkExportRateLimiter = rateLimit({
   },
 });
 
+// Public, unauthenticated submission endpoint for booking requests (see
+// routes/publicInquiries.ts) — keyed on tenantId+IP together so one spammy
+// visitor can only flood a single business's inbox, not every tenant at
+// once from one IP, and a burst aimed at one tenant from many IPs is still
+// capped per business. Looser than the authenticated PII limiters above
+// (this guards inbox spam, not data exposure) but tight enough that a
+// scripted flood can't fill a tenant's Booking Requests list.
+export const publicInquiryRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `${req.params.tenantId ?? "unknown"}:${req.ip ?? "unknown"}`,
+  handler: (_req, res) => {
+    res.status(429).json({ ok: false, error: "Too many requests. Please try again later." });
+  },
+});
+
 // Caps how often WE hit a given tenant's external site — test/discover-
 // schema/sync/import all make real outbound calls to whatever a tenant
 // configured as their connector, so this is keyed on tenantId (not the

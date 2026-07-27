@@ -1,7 +1,10 @@
 import axios from "axios";
 import { apiClient } from "./client";
 
-export type Segment = "Regular" | "VIP" | "Bridal";
+// No longer a fixed union — a tenant's category list is editable (see
+// api/customerCategories.ts); this is just the string a Customer's segment
+// currently holds.
+export type Segment = string;
 
 // phone/birthday are never part of this type — the API never sends them.
 // phoneMasked is a display-safe hint; hasBirthday only says whether one is

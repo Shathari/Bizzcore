@@ -9,6 +9,7 @@ import { sendWhatsAppMessage } from "../integrations/whatsapp";
 import { sendInstagramDirectMessage } from "../integrations/instagram";
 import { sendFacebookDirectMessage } from "../integrations/facebook";
 import { checkAndIncrementUsage } from "../lib/entitlements";
+import { isValidCategory } from "../lib/customerCategories";
 
 const router = Router();
 router.use(authenticate, requirePasswordSet, resolveTenant, authorize("ADMIN"));
@@ -167,7 +168,10 @@ router.get("/broadcasts", async (req, res) => {
 const createBroadcastSchema = z
   .object({
     caption: z.string().trim().min(1, "Message is required"),
-    targetSegment: z.enum(["Regular", "VIP", "Bridal"]).optional(),
+    // Not a fixed enum — validated against the tenant's own live category
+    // list below (see lib/customerCategories.ts), same as
+    // routes/customers.ts's create/import validation.
+    targetSegment: z.string().trim().min(1).optional(),
     targetCustomerId: z.string().optional(),
     scheduledAt: z.string().min(1, "Scheduled time is required"),
   })
@@ -189,6 +193,11 @@ router.post("/broadcasts", async (req, res) => {
       res.status(404).json({ error: "Customer not found" });
       return;
     }
+  }
+
+  if (d.targetSegment && !(await isValidCategory(req.tenantId!, d.targetSegment))) {
+    res.status(400).json({ error: `Unknown category: ${d.targetSegment}` });
+    return;
   }
 
   const scheduledAt = new Date(d.scheduledAt);

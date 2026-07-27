@@ -13,9 +13,8 @@ import { createOrder, getPublicKeyId } from "../integrations/razorpay";
 // comment). POST /checkout only ever creates a Razorpay order + a Pending
 // Invoice row; it never touches Tenant.planId/subscriptionStatus itself.
 // The ONLY place that happens is the signature-verified webhook (see
-// routes/webhooks/razorpay.ts, added alongside step 3) — a client
-// finishing Razorpay Checkout is a UI signal, not proof of payment, so
-// nothing here trusts it.
+// routes/webhooks/razorpay.ts) — a client finishing Razorpay Checkout is a
+// UI signal, not proof of payment, so nothing here trusts it.
 const router = Router();
 router.use(authenticate, requirePasswordSet, resolveTenant, authorize("ADMIN"));
 

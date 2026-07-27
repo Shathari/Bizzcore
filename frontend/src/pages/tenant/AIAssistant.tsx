@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import axios from "axios";
-import { Copy, RefreshCw, Sparkles } from "lucide-react";
+import { Copy, RefreshCw, Sparkles, Wand2 } from "lucide-react";
 import {
   generateContent,
+  refineIdea,
   listGenerations,
   getAIStatus,
   CONTENT_TYPES,
@@ -35,6 +36,15 @@ export default function AIAssistant() {
   const [generating, setGenerating] = useState(false);
   const [history, setHistory] = useState<AIGeneration[] | null>(null);
   const [configured, setConfigured] = useState<boolean | null>(null);
+
+  // "Refine my idea" — optional pre-step. `suggestions` holds the AI's
+  // proposed briefs, editable in place before either is adopted into
+  // `context` below. Null (not []) is "panel not open"; distinguishes from
+  // successfully getting zero suggestions back, which shouldn't happen but
+  // isn't the same state as "haven't asked yet".
+  const [suggestions, setSuggestions] = useState<string[] | null>(null);
+  const [refining, setRefining] = useState(false);
+  const [refineError, setRefineError] = useState<string | null>(null);
 
   async function loadHistory() {
     try {
@@ -73,6 +83,36 @@ export default function AIAssistant() {
     } finally {
       setGenerating(false);
     }
+  }
+
+  async function runRefine() {
+    if (!context.trim()) return;
+    setRefineError(null);
+    setRefining(true);
+    try {
+      const result = await refineIdea({
+        contentType,
+        tone,
+        productName: productName || undefined,
+        rawIdea: context,
+      });
+      setSuggestions(result.suggestions);
+    } catch (err) {
+      setRefineError(
+        axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not refine this idea.") : "Could not refine this idea."
+      );
+    } finally {
+      setRefining(false);
+    }
+  }
+
+  function useSuggestion(text: string) {
+    setContext(text);
+    setSuggestions(null);
+  }
+
+  function editSuggestion(index: number, text: string) {
+    setSuggestions((prev) => (prev ? prev.map((s, i) => (i === index ? text : s)) : prev));
   }
 
   function handleCopy() {
@@ -152,11 +192,55 @@ export default function AIAssistant() {
               <textarea
                 rows={4}
                 value={context}
-                onChange={(e) => setContext(e.target.value)}
-                placeholder="Any occasion, offer, or detail you want included…"
+                onChange={(e) => {
+                  setContext(e.target.value);
+                  setSuggestions(null);
+                }}
+                placeholder="Type a full brief, or just a rough idea (e.g. “diwali sale saree new collection”) and refine it below…"
                 className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
               />
+              <button
+                type="button"
+                onClick={runRefine}
+                disabled={refining || generating || configured === false || !context.trim()}
+                className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-maroon hover:underline disabled:cursor-not-allowed disabled:text-neutral-300 disabled:no-underline"
+              >
+                <Wand2 className="h-3.5 w-3.5" />
+                {refining ? "Refining…" : "Refine my idea"}
+              </button>
+              {refineError && (
+                <p className="mt-1 text-xs text-red-600" role="alert">
+                  {refineError}
+                </p>
+              )}
             </div>
+
+            {suggestions && suggestions.length > 0 && (
+              <div className="space-y-3 rounded-xl border border-gold/40 bg-gold/5 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                  Pick a suggestion, edit it if you like, then generate
+                </p>
+                {suggestions.map((s, i) => (
+                  <div key={i} className="rounded-lg border border-neutral-200 bg-white p-2.5">
+                    <textarea
+                      rows={2}
+                      value={s}
+                      onChange={(e) => editSuggestion(i, e.target.value)}
+                      className="w-full resize-none border-0 p-0 text-sm text-neutral-800 focus:outline-none focus:ring-0"
+                    />
+                    <div className="mt-2 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => useSuggestion(s)}
+                        className="rounded-lg bg-maroon px-3 py-1 text-xs font-semibold text-white hover:bg-maroon/90"
+                      >
+                        Use this
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <Button type="submit" disabled={generating || configured === false} className="w-full">
               <span className="flex items-center justify-center gap-2">

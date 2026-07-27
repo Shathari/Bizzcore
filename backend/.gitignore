@@ -6,3 +6,9 @@ dist/
 *.db.backup-*
 uploads/*
 !uploads/.gitkeep
+
+# Derived at test-run time from prisma/schema.prisma (SQLite variant +
+# its own generated client) — see tests/globalSetup.ts. Never hand-edited,
+# never committed.
+prisma/schema.test.prisma
+prisma/test-client/

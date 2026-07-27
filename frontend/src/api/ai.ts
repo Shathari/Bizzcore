@@ -36,6 +36,16 @@ export async function generateContent(input: {
   return data;
 }
 
+export async function refineIdea(input: {
+  contentType: ContentType;
+  tone: Tone;
+  productName?: string;
+  rawIdea: string;
+}): Promise<{ suggestions: string[] }> {
+  const { data } = await apiClient.post<{ suggestions: string[] }>("/ai/refine", input);
+  return data;
+}
+
 export async function listGenerations(): Promise<AIGeneration[]> {
   const { data } = await apiClient.get<AIGeneration[]>("/ai/generations");
   return data;

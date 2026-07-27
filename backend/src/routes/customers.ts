@@ -10,6 +10,7 @@ import { requirePasswordSet } from "../middleware/requirePasswordSet";
 import { revealRateLimiter, bulkExportRateLimiter } from "../middleware/rateLimit";
 import { encryptField, decryptField, maskPhone, hashForLookup, monthDayOf, normalizePhone } from "../lib/piiCrypto";
 import { logAccess, logBulkAccess, listAccessLogForCustomer, type PiiField } from "../lib/accessLog";
+import { isValidCategory, listCategoryNames } from "../lib/customerCategories";
 
 const router = Router();
 
@@ -18,8 +19,6 @@ const router = Router();
 // including /reveal, is unreachable for Super Admin by construction, not by
 // a separate check.
 router.use(authenticate, requirePasswordSet, resolveTenant, authorize("ADMIN"));
-
-const SEGMENTS = ["Regular", "VIP", "Bridal"] as const;
 
 // Every customer read (list, detail, and the response echoed back from
 // create) goes through this select + toSafeCustomer pair — phone/birthday
@@ -52,7 +51,12 @@ function toSafeCustomer<T extends { birthdayMonthDay: string | null; phoneHash: 
 
 const listQuerySchema = z.object({
   search: z.string().trim().optional(),
-  segment: z.enum(SEGMENTS).optional(),
+  // Not validated against the tenant's live category list — an unknown
+  // value here is harmless (just yields zero matches), and requiring a DB
+  // round-trip on every list request just to validate a filter isn't worth
+  // it. Contrast with create/import below, where an invalid segment would
+  // otherwise get silently persisted.
+  segment: z.string().trim().min(1).optional(),
 });
 
 router.get("/", async (req, res) => {
@@ -291,7 +295,7 @@ const createCustomerSchema = z.object({
   name: z.string().trim().min(1, "Name is required"),
   phone: z.string().trim().min(1, "Phone is required"),
   email: z.string().trim().email("Enter a valid email").optional().or(z.literal("")),
-  segment: z.enum(SEGMENTS).optional(),
+  segment: z.string().trim().min(1).optional(),
   birthday: z.string().optional(),
   totalSpent: z.number().nonnegative().optional(),
   lastPurchase: z.string().optional(),
@@ -305,6 +309,12 @@ router.post("/", async (req, res) => {
     return;
   }
   const d = parsed.data;
+
+  if (d.segment && !(await isValidCategory(req.tenantId!, d.segment))) {
+    res.status(400).json({ error: `Unknown category: ${d.segment}` });
+    return;
+  }
+
   const birthdayDate = d.birthday ? new Date(d.birthday) : null;
 
   const customer = await prisma.customer.create({
@@ -428,11 +438,15 @@ const importCommitSchema = z.object({
   rows: z.array(z.record(z.string())).max(MAX_IMPORT_ROWS),
 });
 
-function parseImportSegment(value: string): (typeof SEGMENTS)[number] {
+// Matches case-insensitively against the tenant's own live category names
+// (not a hardcoded list) — falls back to "Regular" for a blank or
+// unrecognized value, same as before, but now tenant-specific: a business
+// that renamed "Bridal" to "Wedding Client", or added a custom category,
+// gets a real match here instead of everything collapsing to Regular.
+function parseImportSegment(value: string, categoryNames: string[]): string {
   const normalized = value.trim().toLowerCase();
-  if (normalized === "vip") return "VIP";
-  if (normalized === "bridal") return "Bridal";
-  return "Regular";
+  const match = categoryNames.find((n) => n.toLowerCase() === normalized);
+  return match ?? "Regular";
 }
 
 function parseImportDate(value: string): Date | null {
@@ -454,6 +468,7 @@ router.post("/import/commit", async (req, res) => {
   }
   const { mapping, rows } = parsed.data;
   const tenantId = req.tenantId!;
+  const categoryNames = await listCategoryNames(tenantId);
 
   const errors: Array<{ row: number; message: string }> = [];
   const toInsert: Array<{
@@ -502,7 +517,7 @@ router.post("/import/commit", async (req, res) => {
       phoneMasked: maskPhone(phone),
       phoneHash: hashForLookup(normalizePhone(phone)),
       email: emailRaw || null,
-      segment: parseImportSegment(get("segment") || "Regular"),
+      segment: parseImportSegment(get("segment") || "Regular", categoryNames),
       birthday: birthdayDate ? encryptField(birthdayDate.toISOString()) : null,
       birthdayMonthDay: birthdayDate ? monthDayOf(birthdayDate) : null,
       totalSpent: get("total_spent") ? parseImportNumber(get("total_spent")) : 0,

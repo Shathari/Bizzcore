@@ -89,6 +89,7 @@ model Tenant {
   invoices                  Invoice[]
   payments                  Payment[]
   manualGrants              ManualGrant[]              @relation("ManualGrantTenant")
+  customerCategories        CustomerCategory[]
   // Points at whichever ManualGrant (if any) is currently driving planId/
   // subscriptionStatus/currentPeriodEnd above. Null means the tenant's
   // current state is either unpaid or a REAL payment, never a comp — this
@@ -189,6 +190,40 @@ model Customer {
   @@index([tenantId, birthdayMonthDay])
 }
 
+// Tenant-scoped customer/booking categorization — replaces what used to be
+// a single hardcoded 3-value enum ("Regular" | "VIP" | "Bridal") shared by
+// every tenant. Each tenant gets their own independent, editable set,
+// clone-seeded on first access with those same three (see
+// lib/customerCategories.ts's ensureBuiltIns), same "clone-on-first-access"
+// pattern as Feature/FeatureTemplate above. Customer.segment and
+// ScheduledContent.targetSegment deliberately stay plain strings rather than
+// a foreign key to this table — they store a category's `name` at the time
+// it was assigned, so renaming a category is a value propagation (see
+// lib/customerCategories.ts's renameCategory) rather than a schema change,
+// and a category can be deleted without a cascade touching those rows
+// (existing rows just keep the old name as inert text).
+model CustomerCategory {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name      String
+  // Seeded (Regular/VIP/Bridal) vs. tenant-created — display/ordering hint
+  // only; a built-in is just as renameable/deletable as a custom one.
+  isBuiltIn Boolean  @default(false)
+  // Drives the Home dashboard "priority follow-ups" stat card (see
+  // routes/dashboard.ts) — replaces that route's old hardcoded
+  // `segment: { in: ["VIP", "Bridal"] } }` filter. Seeded true for VIP/
+  // Bridal, false for Regular; freely toggleable per tenant thereafter,
+  // including on custom categories.
+  isPriority Boolean @default(false)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
 // Individual sale records. Drives the Home dashboard revenue trend chart and
 // keeps Customer.totalSpent / lastPurchase current — not explicitly named in
 // the spec's table list, but required to back "sales analytics line chart
@@ -245,20 +280,37 @@ model Message {
 }
 
 // Leads/inquiries captured from website chat, WhatsApp, or Instagram — backs
-// the Home dashboard "Today's Inquiries" stat card.
+// the Home dashboard "Today's Inquiries" stat card, and (via the
+// contact*/preferredAt fields below) also the Booking Requests feature: a
+// tenant's own external site posts here through /api/public/inquiries/:tenantId
+// (see routes/publicInquiries.ts), and staff triage the result in
+// routes/inquiries.ts. contact* fields are plaintext, deliberately not run
+// through lib/piiCrypto.ts's Customer-grade encryption — same precedent as
+// Conversation.contactName/contactHandle below: an inbound lead message, not
+// a Customer record, and already behind tenant+ADMIN auth like the rest of
+// this router. converting one into a real Customer (routes/inquiries.ts
+// POST /:id/convert-to-customer) is what promotes it into that stricter
+// regime.
 model Inquiry {
-  id         String    @id @default(cuid())
-  tenantId   String
-  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customerId String?
-  customer   Customer? @relation(fields: [customerId], references: [id])
-  source     String // WEBSITE | WHATSAPP | INSTAGRAM
-  message    String
-  status     String    @default("open") // open | followed_up | closed
-  createdAt  DateTime  @default(now())
+  id           String    @id @default(cuid())
+  tenantId     String
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customerId   String?
+  customer     Customer? @relation(fields: [customerId], references: [id])
+  source       String // WEBSITE | WHATSAPP | INSTAGRAM
+  message      String
+  status       String    @default("open") // open | followed_up | closed
+  contactName  String?
+  contactPhone String?
+  contactEmail String?
+  // Requested date/time for the booking, if the widget collects one — not
+  // relevant to a generic inquiry, so left null for those.
+  preferredAt  DateTime?
+  createdAt    DateTime  @default(now())
 
   @@index([tenantId])
   @@index([tenantId, createdAt])
+  @@index([tenantId, status])
 }
 
 // Minimal pageview log backing the Home dashboard "Website Visitors" stat.

@@ -4,6 +4,7 @@ import { authenticate } from "../middleware/auth";
 import { resolveTenant } from "../middleware/resolveTenant";
 import { authorize } from "../middleware/authorize";
 import { requirePasswordSet } from "../middleware/requirePasswordSet";
+import { listPriorityCategoryNames } from "../lib/customerCategories";
 
 const router = Router();
 router.use(authenticate, requirePasswordSet, resolveTenant, authorize("ADMIN"));
@@ -14,10 +15,12 @@ function startOfToday(): Date {
   return d;
 }
 
-// Priority follow-ups: VIP/Bridal customers who either have never
-// purchased or haven't purchased in FOLLOW_UP_STALE_DAYS — the schema has
-// no explicit "flagged for outreach" field, so this is the practical
-// stand-in for "high-value customer who's gone quiet."
+// Priority follow-ups: customers in one of the tenant's isPriority
+// categories (seeded as VIP/Bridal, but tenant-configurable — see
+// lib/customerCategories.ts) who either have never purchased or haven't
+// purchased in FOLLOW_UP_STALE_DAYS — the schema has no explicit "flagged
+// for outreach" field, so this is the practical stand-in for "high-value
+// customer who's gone quiet."
 const FOLLOW_UP_STALE_DAYS = 30;
 const FOLLOW_UP_LIMIT = 10;
 const REVENUE_TREND_MONTHS = 6;
@@ -34,6 +37,8 @@ router.get("/summary", async (req, res) => {
   trendStart.setDate(1);
   trendStart.setHours(0, 0, 0, 0);
 
+  const priorityCategoryNames = await listPriorityCategoryNames(tenantId);
+
   const [todaysInquiries, websiteVisitorsToday, newCustomersToday, followUpCandidates, purchases] =
     await Promise.all([
       prisma.inquiry.count({ where: { tenantId, createdAt: { gte: todayStart } } }), // tenant-scoped
@@ -42,7 +47,7 @@ router.get("/summary", async (req, res) => {
       prisma.customer.findMany({
         where: {
           tenantId, // tenant-scoped
-          segment: { in: ["VIP", "Bridal"] },
+          segment: { in: priorityCategoryNames },
           OR: [{ lastPurchase: null }, { lastPurchase: { lt: staleThreshold } }],
         },
         // phoneMasked only — never phone. The frontend's Call action
