@@ -1,11 +1,9 @@
 import { Sparkles, Users, Globe2, Share2, MessageCircle, Mail } from "lucide-react";
 import { SignInForm } from "../components/SignInForm";
 
-// WHATSAPP_NUMBER is still a placeholder — layout only, per the "show me
-// the layout before wiring real contact links" instruction. Replace it
-// once the real WhatsApp Business number is confirmed.
-const WHATSAPP_NUMBER = "919000000000"; // digits only, no "+", for the wa.me link
-const WHATSAPP_MESSAGE = "Hi! I'd like to get started with BizzCore.";
+const WHATSAPP_NUMBER = "919762098549"; // digits only, no "+", for the wa.me link
+const WHATSAPP_DISPLAY = "+91 97620 98549";
+const WHATSAPP_MESSAGE = "I want to join BizzCore";
 const CONTACT_EMAIL = "bizzcore225@gmail.com";
 
 const WHATSAPP_HREF = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(WHATSAPP_MESSAGE)}`;
@@ -84,7 +82,7 @@ export default function Landing() {
                   <MessageCircle className="h-6 w-6" />
                 </span>
                 <span className="font-serif text-lg text-neutral-900">Chat on WhatsApp</span>
-                <span className="text-sm text-neutral-500">Fastest way to reach us</span>
+                <span className="text-sm text-neutral-500">{WHATSAPP_DISPLAY}</span>
               </a>
               <a
                 href={`mailto:${CONTACT_EMAIL}`}
