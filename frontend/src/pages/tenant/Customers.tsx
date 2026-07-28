@@ -135,13 +135,13 @@ export default function Customers() {
   }
 
   return (
-    <div className="px-8 py-8">
+    <div className="px-4 py-6 sm:px-8 sm:py-8">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="font-serif text-2xl text-neutral-900">Customers</h1>
           <p className="mt-1 text-sm text-neutral-500">Every customer on file for your business.</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <Button variant="secondary" onClick={() => setImportOpen(true)}>
             <span className="flex items-center gap-2">
               <Upload className="h-4 w-4" /> Import
@@ -385,7 +385,7 @@ function AddCustomerModal({
           </p>
         )}
 
-        <div className="flex justify-end gap-3">
+        <div className="flex flex-wrap justify-end gap-3">
           <Button type="button" variant="secondary" onClick={resetAndClose}>
             Cancel
           </Button>

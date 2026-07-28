@@ -48,7 +48,7 @@ export default function Home() {
   }, [location, navigate, showToast, user]);
 
   return (
-    <div className="px-8 py-8">
+    <div className="px-4 py-6 sm:px-8 sm:py-8">
       <h1 className="font-serif text-2xl text-neutral-900">Home</h1>
       <p className="mt-1 text-sm text-neutral-500">Today's snapshot for {user?.businessName}.</p>
 

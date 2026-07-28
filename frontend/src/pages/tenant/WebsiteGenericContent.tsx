@@ -180,7 +180,7 @@ function ImportFiltersModal({
         <p className="text-xs text-neutral-500">
           Only items matching every filter you set will be imported. Leave a field blank to not filter on it.
         </p>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {IMPORT_FILTER_FIELDS.map((f) => (
             <div key={f.key}>
               {f.type === "checkbox" ? (
@@ -207,7 +207,7 @@ function ImportFiltersModal({
             </div>
           ))}
         </div>
-        <div className="flex justify-end gap-3">
+        <div className="flex flex-wrap justify-end gap-3">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel
           </Button>
@@ -369,7 +369,7 @@ function ListContentTab({
                 </Td>
                 {!readOnly && (
                   <Td className="text-right">
-                    <div className="flex justify-end gap-3">
+                    <div className="flex flex-wrap justify-end gap-3">
                       <button onClick={() => setModalItem(item)} className="text-neutral-400 hover:text-maroon" aria-label={`Edit row ${rowIndex + 1}`}>
                         <Pencil className="h-4 w-4" />
                       </button>
@@ -776,7 +776,7 @@ function GenericContentModal({
           </p>
         )}
 
-        <div className="flex justify-end gap-3">
+        <div className="flex flex-wrap justify-end gap-3">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel
           </Button>

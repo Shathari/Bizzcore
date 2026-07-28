@@ -69,7 +69,7 @@ export default function SocialMedia() {
   }, []);
 
   return (
-    <div className="px-8 py-8">
+    <div className="px-4 py-6 sm:px-8 sm:py-8">
       <h1 className="font-serif text-2xl text-neutral-900">Social Media Manager</h1>
       <p className="mt-1 text-sm text-neutral-500">Schedule Instagram and Facebook content, and manage DMs and comments.</p>
 
@@ -297,7 +297,7 @@ function NewPostModal({ open, onClose, onCreated }: { open: boolean; onClose: ()
   return (
     <Modal open={open} onClose={resetAndClose} title="New Post">
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-neutral-700">Channel</label>
             <select
@@ -349,7 +349,7 @@ function NewPostModal({ open, onClose, onCreated }: { open: boolean; onClose: ()
                 Generates a {channel === "INSTAGRAM" ? "Instagram" : "Facebook"}-style caption from the AI Marketing
                 Assistant — review it before scheduling.
               </p>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-neutral-700">Tone</label>
                   <select
@@ -427,7 +427,7 @@ function NewPostModal({ open, onClose, onCreated }: { open: boolean; onClose: ()
           </p>
         )}
 
-        <div className="flex justify-end gap-3">
+        <div className="flex flex-wrap justify-end gap-3">
           <Button type="button" variant="secondary" onClick={resetAndClose}>
             Cancel
           </Button>

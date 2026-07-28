@@ -20,7 +20,7 @@ export type DeliveryChannelResult = { delivered: boolean; mode: "live" | "mock";
 
 export type DeliveryResult = {
   email: DeliveryChannelResult;
-  sms: DeliveryChannelResult | null;
+  whatsapp: DeliveryChannelResult | null;
   fallback?: { tempPassword: string; loginUrl: string };
 };
 

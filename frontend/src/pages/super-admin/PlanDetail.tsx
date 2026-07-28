@@ -83,14 +83,14 @@ export default function PlanDetail() {
 
   if (!plan) {
     return (
-      <div className="px-8 py-8">
+      <div className="px-4 py-6 sm:px-8 sm:py-8">
         <p className="text-sm text-neutral-400">Loading…</p>
       </div>
     );
   }
 
   return (
-    <div className="px-8 py-8">
+    <div className="px-4 py-6 sm:px-8 sm:py-8">
       <Link to="/super-admin/plans" className="inline-flex items-center gap-1.5 text-sm text-neutral-500 hover:text-maroon">
         <ArrowLeft className="h-4 w-4" /> Back to Plans
       </Link>

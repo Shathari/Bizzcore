@@ -1,13 +1,16 @@
-import { LogOut } from "lucide-react";
+import { LogOut, Menu } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
-export function TopBar() {
+export function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
   return (
-    <header className="flex items-center justify-end border-b border-neutral-200 bg-white px-8 py-4">
+    <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-4 sm:px-6 md:justify-end md:px-8">
+      <button onClick={onMenuClick} className="text-neutral-500 hover:text-maroon md:hidden" aria-label="Open menu">
+        <Menu className="h-6 w-6" />
+      </button>
       <div className="flex items-center gap-4">
         {user?.logoUrl ? (
           <img src={user.logoUrl} alt="" className="h-9 w-9 rounded-full object-cover border border-neutral-200" />
@@ -18,7 +21,7 @@ export function TopBar() {
             </div>
           )
         )}
-        <div className="text-right">
+        <div className="hidden text-right sm:block">
           <p className="text-sm font-medium text-neutral-800">{user?.name}</p>
           <p className="text-xs text-neutral-500">{user?.businessName}</p>
         </div>

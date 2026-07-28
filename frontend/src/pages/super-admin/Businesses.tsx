@@ -89,7 +89,7 @@ export default function Businesses() {
   }
 
   return (
-    <div className="px-8 py-8">
+    <div className="px-4 py-6 sm:px-8 sm:py-8">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="font-serif text-2xl text-neutral-900">Businesses</h1>

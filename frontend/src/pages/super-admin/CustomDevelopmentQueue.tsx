@@ -55,7 +55,7 @@ export default function CustomDevelopmentQueue() {
   }, [statusFilter]);
 
   return (
-    <div className="px-8 py-8">
+    <div className="px-4 py-6 sm:px-8 sm:py-8">
       <h1 className="font-serif text-2xl text-neutral-900">Custom Development</h1>
       <p className="mt-1 text-sm text-neutral-500">Requests across every business — a quote queue, not automated billing.</p>
 
@@ -231,7 +231,7 @@ function UpdateRequestModal({
               {error}
             </p>
           )}
-          <div className="flex justify-end gap-3">
+          <div className="flex flex-wrap justify-end gap-3">
             <Button type="button" variant="secondary" onClick={onClose}>
               Cancel
             </Button>

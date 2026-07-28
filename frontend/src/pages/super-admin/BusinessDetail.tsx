@@ -126,14 +126,14 @@ export default function BusinessDetail() {
 
   if (error) {
     return (
-      <div className="px-8 py-8">
+      <div className="px-4 py-6 sm:px-8 sm:py-8">
         <p className="text-sm text-red-600">{error}</p>
       </div>
     );
   }
 
   if (!detail || !id) {
-    return <div className="px-8 py-8 text-neutral-400">Loading…</div>;
+    return <div className="px-4 py-6 sm:px-8 sm:py-8 text-neutral-400">Loading…</div>;
   }
 
   const { tenant, users, stats, auditLog } = detail;
@@ -141,7 +141,7 @@ export default function BusinessDetail() {
   const isDeleted = Boolean(tenant.deletedAt);
 
   return (
-    <div className="px-8 py-8 max-w-3xl">
+    <div className="px-4 py-6 sm:px-8 sm:py-8 max-w-3xl">
       <button
         onClick={() => navigate("/super-admin")}
         className="flex items-center gap-1 text-sm text-neutral-500 hover:text-maroon"
@@ -453,7 +453,7 @@ function BusinessDetailsForm({
   return (
     <form onSubmit={handleSubmit} className="mt-4 space-y-4">
       <fieldset disabled={disabled} className="space-y-4 disabled:opacity-60">
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field label="Business name" value={businessName} onChange={setBusinessName} required />
           <Field label="Website base URL" value={websiteUrl} onChange={setWebsiteUrl} type="url" placeholder="https://" />
           <Field label="Custom domain" value={customDomain} onChange={setCustomDomain} placeholder="shop.example.com" />

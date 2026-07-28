@@ -23,7 +23,7 @@ export default function Plans() {
   }, []);
 
   return (
-    <div className="px-8 py-8">
+    <div className="px-4 py-6 sm:px-8 sm:py-8">
       <h1 className="font-serif text-2xl text-neutral-900">Plans</h1>
       <p className="mt-1 text-sm text-neutral-500">
         The 4 subscription products every business is assigned to (or not). Edit a plan's feature grid here —

@@ -2,10 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createTenantWithAdmin } from "./helpers";
 import { prisma } from "../src/lib/prisma";
 import { encrypt } from "../src/lib/crypto";
-import { sendWhatsAppMessage } from "../src/integrations/whatsapp";
+import { sendWhatsAppMessage, sendPlatformWhatsAppMessage } from "../src/integrations/whatsapp";
 import { sendInstagramDirectMessage, publishInstagramPost, replyToInstagramComment } from "../src/integrations/instagram";
 import { publishFacebookPost } from "../src/integrations/facebook";
-import { sendSms } from "../src/integrations/sms";
 
 async function saveMetaCredential(tenantId: string, payload: object) {
   await prisma.integrationCredential.create({
@@ -28,10 +27,8 @@ describe("integrations: mock-first adapters", () => {
 
   afterEach(() => {
     fetchSpy.mockRestore();
-    delete process.env.SMS_PROVIDER;
-    delete process.env.TWILIO_ACCOUNT_SID;
-    delete process.env.TWILIO_AUTH_TOKEN;
-    delete process.env.TWILIO_FROM_NUMBER;
+    delete process.env.WHATSAPP_PLATFORM_PHONE_NUMBER_ID;
+    delete process.env.WHATSAPP_PLATFORM_ACCESS_TOKEN;
   });
 
   it("whatsapp: runs in mock mode when no tenant credential exists", async () => {
@@ -109,22 +106,21 @@ describe("integrations: mock-first adapters", () => {
     expect(JSON.parse(init.body as string)).toEqual({ message: "Text-only update" });
   });
 
-  it("sms: runs in mock mode when the selected provider has no credentials", async () => {
-    process.env.SMS_PROVIDER = "twilio";
-    const result = await sendSms({ to: "+919800000070", body: "hi" });
+  it("whatsapp (platform): runs in mock mode when WHATSAPP_PLATFORM_* isn't configured", async () => {
+    const result = await sendPlatformWhatsAppMessage("+919800000070", "hi");
     expect(result).toEqual({ delivered: false, mode: "mock" });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("sms: dispatches to the correct provider based on SMS_PROVIDER", async () => {
-    process.env.SMS_PROVIDER = "twilio";
-    process.env.TWILIO_ACCOUNT_SID = "AC-fake";
-    process.env.TWILIO_AUTH_TOKEN = "fake-token";
-    process.env.TWILIO_FROM_NUMBER = "+15005550006";
+  it("whatsapp (platform): attempts a live call using BizzCore's own credentials, not any tenant's", async () => {
+    process.env.WHATSAPP_PLATFORM_PHONE_NUMBER_ID = "platform-phone-1";
+    process.env.WHATSAPP_PLATFORM_ACCESS_TOKEN = "platform-token";
     fetchSpy.mockResolvedValue({ ok: true, text: async () => "" } as Response);
 
-    const result = await sendSms({ to: "+919800000071", body: "hi via twilio" });
+    const result = await sendPlatformWhatsAppMessage("+919800000071", "your BizzCore login is ready");
     expect(result).toEqual({ delivered: true, mode: "live" });
-    const [url] = fetchSpy.mock.calls[0] as [string];
-    expect(url).toContain("api.twilio.com");
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("platform-phone-1/messages");
+    expect(init.headers).toMatchObject({ Authorization: "Bearer platform-token" });
   });
 });

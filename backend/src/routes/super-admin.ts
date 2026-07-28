@@ -9,7 +9,7 @@ import { authorize } from "../middleware/authorize";
 import { requirePasswordSet } from "../middleware/requirePasswordSet";
 import { generateTempPassword } from "../lib/password";
 import { sendEmail } from "../integrations/email";
-import { sendSms, type SmsResult } from "../integrations/sms";
+import { sendPlatformWhatsAppMessage, type WhatsAppResult } from "../integrations/whatsapp";
 import { createMemoryUploader, saveBufferForTenant, deleteUploadedFile, handleUpload, UPLOADS_ROOT } from "../lib/upload";
 
 // Super Admin manages account status/credentials, not tenant business data
@@ -57,21 +57,21 @@ async function deliverCredentials(
     ].join("\n"),
   });
 
-  let smsResult: SmsResult | null = null;
+  let whatsappResult: WhatsAppResult | null = null;
   if (user.phone) {
-    smsResult = await sendSms({
-      to: user.phone,
-      body: `BizzCore: your login for ${tenant.businessName} is ready. Email: ${user.email}  Temp password: ${tempPassword}  Login: ${APP_LOGIN_URL}`,
-    });
+    whatsappResult = await sendPlatformWhatsAppMessage(
+      user.phone,
+      `BizzCore: your login for ${tenant.businessName} is ready. Email: ${user.email}  Temp password: ${tempPassword}  Login: ${APP_LOGIN_URL}`
+    );
   }
 
-  const allDelivered = emailResult.delivered && (smsResult === null || smsResult.delivered);
+  const allDelivered = emailResult.delivered && (whatsappResult === null || whatsappResult.delivered);
 
   return {
     email: emailResult,
-    sms: smsResult,
+    whatsapp: whatsappResult,
     // Only surfaced on-screen when live delivery didn't fully succeed —
-    // if email (and SMS, when applicable) went out for real, the temp
+    // if email (and WhatsApp, when applicable) went out for real, the temp
     // password shouldn't also sit in plaintext in an API response.
     fallback: allDelivered ? undefined : { tempPassword, loginUrl: APP_LOGIN_URL },
   };
@@ -184,8 +184,8 @@ router.post("/businesses", handleUpload(logoUpload.single("logo")), async (req, 
     businessName: tenant.businessName,
     ownerEmail: admin.email,
     emailDelivered: delivery.email.delivered,
-    smsAttempted: delivery.sms !== null,
-    smsDelivered: delivery.sms?.delivered ?? null,
+    whatsappAttempted: delivery.whatsapp !== null,
+    whatsappDelivered: delivery.whatsapp?.delivered ?? null,
   });
 
   res.status(201).json({
@@ -527,8 +527,8 @@ router.post("/businesses/:id/resend-credentials", async (req, res) => {
   await logAudit(req.user!.id, "CREDENTIALS_RESENT", tenant.id, {
     adminEmail: admin.email,
     emailDelivered: delivery.email.delivered,
-    smsAttempted: delivery.sms !== null,
-    smsDelivered: delivery.sms?.delivered ?? null,
+    whatsappAttempted: delivery.whatsapp !== null,
+    whatsappDelivered: delivery.whatsapp?.delivered ?? null,
   });
 
   res.json({ admin: { id: admin.id, name: admin.name, email: admin.email }, delivery });

@@ -131,7 +131,7 @@ export default function AIAssistant() {
   }
 
   return (
-    <div className="px-8 py-8">
+    <div className="px-4 py-6 sm:px-8 sm:py-8">
       <h1 className="font-serif text-2xl text-neutral-900">AI Marketing Assistant</h1>
       <p className="mt-1 text-sm text-neutral-500">Generate on-brand captions, descriptions, and more.</p>
 
@@ -146,7 +146,7 @@ export default function AIAssistant() {
         <Card>
           <h2 className="font-serif text-lg text-neutral-900">Compose</h2>
           <form onSubmit={runGenerate} className="mt-4 space-y-4">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-neutral-700">Content type</label>
                 <select

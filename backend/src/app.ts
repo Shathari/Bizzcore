@@ -23,6 +23,7 @@ import superAdminPlansRoutes from "./routes/superAdminPlans";
 import subscriptionRoutes from "./routes/subscription";
 import billingRoutes from "./routes/billing";
 import razorpayWebhookRoutes from "./routes/webhooks/razorpay";
+import whatsappWebhookRoutes from "./routes/webhooks/whatsapp";
 import connectorLoginRoutes from "./routes/connectorLogin";
 import connectorConfigRoutes from "./routes/connectorConfig";
 import inquiryRoutes from "./routes/inquiries";
@@ -62,6 +63,12 @@ export function createApp() {
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok" });
   });
+
+  // Meta's WhatsApp Cloud API webhook — no signature verification yet (see
+  // that file's comment), so unlike the Razorpay webhook above this doesn't
+  // need to be mounted before express.json(); normal parsed JSON body is
+  // fine for both the GET verification handshake and POST event delivery.
+  app.use("/api/webhooks/whatsapp", whatsappWebhookRoutes);
 
   // Product images / banners — publicly readable (they're meant to appear
   // on the tenant's storefront), namespaced under each tenant's own

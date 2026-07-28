@@ -58,7 +58,7 @@ export default function Settings() {
   }, []);
 
   return (
-    <div className="px-8 py-8">
+    <div className="px-4 py-6 sm:px-8 sm:py-8">
       <h1 className="font-serif text-2xl text-neutral-900">Settings</h1>
       <p className="mt-1 text-sm text-neutral-500">
         Connect your Meta (Instagram &amp; Facebook) and WhatsApp Business accounts so Communication Center and
@@ -216,7 +216,7 @@ function MetaSettingsCard({ status, onChanged }: { status: MetaStatus | null; on
           </p>
         )}
 
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <Button type="submit" disabled={saving}>
             {saving ? "Saving…" : "Save"}
           </Button>
@@ -302,7 +302,7 @@ function WhatsAppSettingsCard({ status, onChanged }: { status: WhatsAppStatus | 
           </p>
         )}
 
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <Button type="submit" disabled={saving}>
             {saving ? "Saving…" : "Save"}
           </Button>

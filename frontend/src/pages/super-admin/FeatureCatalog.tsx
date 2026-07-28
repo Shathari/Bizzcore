@@ -104,7 +104,7 @@ export default function FeatureCatalog() {
   if (!tenantId) return null;
 
   return (
-    <div className="px-8 py-8">
+    <div className="px-4 py-6 sm:px-8 sm:py-8">
       <Link to={`/super-admin/businesses/${tenantId}`} className="inline-flex items-center gap-1.5 text-sm text-neutral-500 hover:text-maroon">
         <ArrowLeft className="h-3.5 w-3.5" /> Back to business
       </Link>

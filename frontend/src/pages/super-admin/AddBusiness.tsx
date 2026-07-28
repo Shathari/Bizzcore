@@ -84,7 +84,7 @@ export default function AddBusiness() {
   }
 
   return (
-    <div className="px-8 py-8 max-w-2xl">
+    <div className="px-4 py-6 sm:px-8 sm:py-8 max-w-2xl">
       <h1 className="font-serif text-2xl text-neutral-900">Add Business</h1>
       <p className="mt-1 text-sm text-neutral-500">
         Creates the tenant and its first admin account, and sends login credentials.
@@ -149,7 +149,7 @@ export default function AddBusiness() {
               Admin account: {result.admin.name} ({result.admin.email})
             </p>
             <DeliveryStatusLine channel="Email" res={result.delivery.email} />
-            {result.delivery.sms && <DeliveryStatusLine channel="SMS" res={result.delivery.sms} />}
+            {result.delivery.whatsapp && <DeliveryStatusLine channel="WhatsApp" res={result.delivery.whatsapp} />}
           </div>
 
           {result.delivery.fallback && (
@@ -192,7 +192,7 @@ export default function AddBusiness() {
             </div>
           )}
 
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
             <Link
               to={`/super-admin/businesses/${result.tenant.id}`}
               className="rounded-xl bg-maroon px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-maroon-dark"
