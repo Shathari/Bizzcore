@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
-import { Home, Users, MessageSquare, Globe, Share2, Wand2, CreditCard, Settings as SettingsIcon, Sparkles, CalendarCheck, X } from "lucide-react";
+import { Home, Users, MessageSquare, Globe, Share2, Wand2, CreditCard, Settings as SettingsIcon, CalendarCheck, X } from "lucide-react";
+import logo from "../assets/logo.png";
 
 const NAV_ITEMS = [
   { to: "/dashboard", label: "Home", icon: Home, end: true },
@@ -43,7 +44,7 @@ export function Sidebar() {
   return (
     <aside className="hidden w-64 shrink-0 flex-col border-r border-neutral-200 bg-cream md:flex">
       <div className="flex items-center gap-2 px-6 py-6">
-        <Sparkles className="h-5 w-5 text-gold" />
+        <img src={logo} alt="BizzCore" className="h-7 w-7" />
         <span className="font-serif text-xl text-maroon">BizzCore</span>
       </div>
       <NavList />
@@ -74,7 +75,7 @@ export function MobileNavDrawer({ open, onClose }: { open: boolean; onClose: () 
       >
         <div className="flex items-center justify-between px-6 py-6">
           <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-gold" />
+            <img src={logo} alt="BizzCore" className="h-7 w-7" />
             <span className="font-serif text-xl text-maroon">BizzCore</span>
           </div>
           <button onClick={onClose} className="text-neutral-400 hover:text-maroon" aria-label="Close menu">

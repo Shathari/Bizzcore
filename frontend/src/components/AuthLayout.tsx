@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Sparkles } from "lucide-react";
+import logo from "../assets/logo.png";
 
 // Shared shell for every logged-out auth page (Login, ForgotPassword,
 // ResetPassword) — the maroon marketing panel + white card, so the three
@@ -9,7 +9,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
     <div className="min-h-screen flex flex-col md:flex-row">
       <div className="md:w-1/2 bg-maroon text-cream flex flex-col justify-between px-10 py-12 md:px-16 md:py-20">
         <div className="flex items-center gap-2">
-          <Sparkles className="h-6 w-6 text-gold" />
+          <img src={logo} alt="BizzCore" className="h-8 w-8" />
           <span className="font-serif text-2xl tracking-wide">BizzCore</span>
         </div>
 

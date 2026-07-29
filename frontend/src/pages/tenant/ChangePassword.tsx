@@ -1,10 +1,10 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import axios from "axios";
-import { Sparkles } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { changePassword } from "../../api/auth";
 import { FullScreenSpinner } from "../../components/FullScreenSpinner";
+import logo from "../../assets/logo.png";
 
 export default function ChangePassword() {
   const { user, loading: authLoading, refresh } = useAuth();
@@ -64,7 +64,7 @@ export default function ChangePassword() {
     <div className="min-h-screen bg-cream flex items-center justify-center px-4">
       <div className="w-full max-w-md rounded-xl border border-neutral-200 bg-white p-8 shadow-sm">
         <div className="flex items-center gap-2">
-          <Sparkles className="h-5 w-5 text-gold" />
+          <img src={logo} alt="BizzCore" className="h-7 w-7" />
           <span className="font-serif text-xl text-maroon">BizzCore</span>
         </div>
 

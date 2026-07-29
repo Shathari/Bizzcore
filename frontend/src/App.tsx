@@ -6,6 +6,10 @@ import { FullScreenSpinner } from "./components/FullScreenSpinner";
 import { SuperAdminShell } from "./components/SuperAdminShell";
 import { TenantShell } from "./components/TenantShell";
 import Landing from "./pages/Landing";
+import Privacy from "./pages/Privacy";
+import Terms from "./pages/Terms";
+import Security from "./pages/Security";
+import Status from "./pages/Status";
 import Login from "./pages/tenant/Login";
 import ForgotPassword from "./pages/tenant/ForgotPassword";
 import ResetPassword from "./pages/tenant/ResetPassword";
@@ -45,6 +49,10 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<Landing />} />
+            <Route path="/privacy" element={<Privacy />} />
+            <Route path="/terms" element={<Terms />} />
+            <Route path="/security" element={<Security />} />
+            <Route path="/status" element={<Status />} />
             <Route path="/login" element={<Login />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />

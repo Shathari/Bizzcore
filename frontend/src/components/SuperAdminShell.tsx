@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { Building2, PlusCircle, ScrollText, LogOut, Sparkles, Wrench, CreditCard, Menu, X } from "lucide-react";
+import { Building2, PlusCircle, ScrollText, LogOut, Wrench, CreditCard, Menu, X } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
+import logo from "../assets/logo.png";
 
 // Reuses the tenant app's palette/fonts but is structurally distinct — a
 // dark, full-bleed sidebar rather than the tenant shell's cream sidebar
@@ -71,7 +72,7 @@ export function SuperAdminShell() {
           triggered drawer below at narrower widths. */}
       <aside className="hidden w-64 shrink-0 flex-col bg-maroon-dark text-cream md:flex">
         <div className="flex items-center gap-2 px-6 py-6">
-          <Sparkles className="h-5 w-5 text-gold" />
+          <img src={logo} alt="BizzCore" className="h-7 w-7" />
           <div>
             <p className="font-serif text-lg leading-none">BizzCore</p>
             <p className="mt-1 text-[11px] uppercase tracking-wider text-cream/60">Control Tower</p>
@@ -100,7 +101,7 @@ export function SuperAdminShell() {
       >
         <div className="flex items-center justify-between px-4 py-4">
           <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-gold" />
+            <img src={logo} alt="BizzCore" className="h-7 w-7" />
             <div>
               <p className="font-serif text-lg leading-none">BizzCore</p>
               <p className="mt-1 text-[11px] uppercase tracking-wider text-cream/60">Control Tower</p>
@@ -120,7 +121,7 @@ export function SuperAdminShell() {
             <Menu className="h-6 w-6" />
           </button>
           <div className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-gold" />
+            <img src={logo} alt="BizzCore" className="h-6 w-6" />
             <span className="font-serif text-lg text-maroon">Control Tower</span>
           </div>
         </header>
