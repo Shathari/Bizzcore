@@ -352,8 +352,8 @@ export default function Subscription() {
         <p className="mt-1 text-sm text-neutral-500">
           Every checkout you've started, and its confirmed status. Payment issue or an invoice stuck on "Awaiting
           confirmation"? Contact us at{" "}
-          <a href="mailto:bizzcore225@gmail.com" className="font-medium text-maroon hover:underline">
-            bizzcore225@gmail.com
+          <a href="mailto:support@bizzcore.in" className="font-medium text-maroon hover:underline">
+            support@bizzcore.in
           </a>
           .
         </p>

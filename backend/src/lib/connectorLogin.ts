@@ -3,7 +3,7 @@ import { encrypt, decrypt } from "./crypto";
 import { prisma } from "./prisma";
 import { logger } from "./logger";
 import { logConnectorAccess } from "./connectorAccessLog";
-import { fetchWithTimeout, REQUEST_TIMEOUT_MS, type CredentialRefresher } from "./websiteApiClient";
+import { fetchWithTimeout, REQUEST_TIMEOUT_MS, resolveMethodAuthType, type CredentialRefresher } from "./websiteApiClient";
 import { getFeatureByKey } from "./featureCatalog";
 
 // "Log in with admin credentials" — an alternative to authType "bearer"
@@ -384,6 +384,10 @@ type LoginCapableIntegration = {
   id: string;
   featureId: string;
   authType: string;
+  // Per-method overrides — a method whose own override authType is "login"
+  // uses the shared DataSource token for THAT method even when the
+  // integration's shared authType isn't "login" (see resolveMethodAuthType).
+  endpoints?: { method: string; authType: string | null }[];
   dataSource: LoginCapableDataSource | null;
 };
 
@@ -403,9 +407,14 @@ const EXPIRY_BUFFER_MS = 30_000;
 // refresh triggered by ANY feature's call updates it for every other
 // feature sharing that DataSource too — the next one to check simply sees
 // an already-fresh token and does nothing.
-export async function ensureFreshToken<T extends LoginCapableIntegration>(integration: T, tenantId: string, actorId: string | null): Promise<T> {
+export async function ensureFreshToken<T extends LoginCapableIntegration>(
+  integration: T,
+  tenantId: string,
+  actorId: string | null,
+  method: string
+): Promise<T> {
   const dataSource = integration.dataSource;
-  if (integration.authType !== "login" || !dataSource?.tokenExpiresAt) return integration;
+  if (resolveMethodAuthType(integration, method) !== "login" || !dataSource?.tokenExpiresAt) return integration;
   if (dataSource.tokenExpiresAt.getTime() - EXPIRY_BUFFER_MS > Date.now()) return integration; // still comfortably valid
   if (!dataSource.loginUrl || !dataSource.loginEmailEncrypted || !dataSource.loginPasswordEncrypted) return integration;
 
@@ -462,10 +471,16 @@ export async function ensureFreshToken<T extends LoginCapableIntegration>(integr
 export function buildCredentialRefresher(
   integration: LoginCapableIntegration,
   tenantId: string,
-  actorId: string | null
+  actorId: string | null,
+  method: string
 ): CredentialRefresher | undefined {
   const dataSource = integration.dataSource;
-  if (integration.authType !== "login" || !dataSource?.loginUrl || !dataSource.loginEmailEncrypted || !dataSource.loginPasswordEncrypted) {
+  if (
+    resolveMethodAuthType(integration, method) !== "login" ||
+    !dataSource?.loginUrl ||
+    !dataSource.loginEmailEncrypted ||
+    !dataSource.loginPasswordEncrypted
+  ) {
     return undefined;
   }
 
@@ -527,18 +542,27 @@ export function buildCredentialRefresher(
 // ---------------------------------------------------------------------------
 // credentialStatus reconciliation — called by lib/websiteContentService.ts
 // after every write-back/import attempt with whatever HTTP status the
-// FINAL (post any auto-refresh-and-retry) response carried. For a "login"
-// integration this reconciles the SHARED DataSource's status (meaningful
-// for every feature on it); otherwise it's this one feature's own status
-// (a static bearer/apiKey/etc. token going stale is still a per-feature
-// concern, since it was never shared to begin with).
+// FINAL (post any auto-refresh-and-retry) response carried, for the exact
+// method that was just called. Whenever "login" is the EFFECTIVE authType
+// for that method (the shared authType, or that method's own override —
+// see resolveMethodAuthType) this reconciles the SHARED DataSource's status
+// (meaningful for every feature/method on it); otherwise it's this one
+// feature's own status (a static bearer/apiKey/etc. token going stale is
+// still a per-feature concern, since it was never shared to begin with).
 // ---------------------------------------------------------------------------
 
 export async function reconcileCredentialStatus(
-  integration: { id: string; authType: string; credentialStatus: string; dataSource: { id: string; credentialStatus: string } | null },
-  responseStatus: number | undefined
+  integration: {
+    id: string;
+    authType: string;
+    credentialStatus: string;
+    endpoints?: { method: string; authType: string | null }[];
+    dataSource: { id: string; credentialStatus: string } | null;
+  },
+  responseStatus: number | undefined,
+  method: string
 ): Promise<void> {
-  const useDataSource = integration.authType === "login" && integration.dataSource;
+  const useDataSource = resolveMethodAuthType(integration, method) === "login" && integration.dataSource;
   const targetId = useDataSource ? integration.dataSource!.id : integration.id;
   const currentStatus = useDataSource ? integration.dataSource!.credentialStatus : integration.credentialStatus;
 

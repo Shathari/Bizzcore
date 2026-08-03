@@ -246,8 +246,8 @@ function logSyncStatus(
 async function pushCreate(tenantId: string, integration: ActiveIntegration, data: Record<string, unknown>, actorId: string | null) {
   const payload = ensureSlug(data, integration.feature.fields);
   const confidentialFields = getConfidentialFields(integration);
-  const fresh = await ensureFreshToken(integration, tenantId, actorId);
-  const refresher = buildCredentialRefresher(fresh, tenantId, actorId);
+  const fresh = await ensureFreshToken(integration, tenantId, actorId, "POST");
+  const refresher = buildCredentialRefresher(fresh, tenantId, actorId, "POST");
 
   // Detects this feature's image-type fields (generic — see
   // lib/mediaSync.ts, no feature/field name ever hardcoded) and, when any
@@ -302,7 +302,7 @@ async function pushCreate(tenantId: string, integration: ActiveIntegration, data
     { tenantId, contentType: integration.feature.key },
     refresher
   );
-  await reconcileCredentialStatus(fresh, result.status);
+  await reconcileCredentialStatus(fresh, result.status, "POST");
   await logConnectorAccess({
     tenantId,
     featureId: integration.featureId,
@@ -348,8 +348,8 @@ async function pushRetryCreate(
 ) {
   const payload = ensureSlug(data, integration.feature.fields);
   const confidentialFields = getConfidentialFields(integration);
-  const fresh = await ensureFreshToken(integration, tenantId, actorId);
-  const refresher = buildCredentialRefresher(fresh, tenantId, actorId);
+  const fresh = await ensureFreshToken(integration, tenantId, actorId, "POST");
+  const refresher = buildCredentialRefresher(fresh, tenantId, actorId, "POST");
 
   const mediaResult = await syncMediaFields({
     tenantId,
@@ -402,7 +402,7 @@ async function pushRetryCreate(
     },
     refresher
   );
-  await reconcileCredentialStatus(fresh, result.status);
+  await reconcileCredentialStatus(fresh, result.status, "POST");
   await logConnectorAccess({
     tenantId,
     featureId: integration.featureId,
@@ -438,8 +438,8 @@ async function pushUpdate(
   // PATCH only if Super Admin explicitly configured a PATCH endpoint for
   // this feature — PUT remains the default update verb otherwise.
   const updateMethod = integration.endpoints.some((e) => e.method === "PATCH") ? "PATCH" : "PUT";
-  const fresh = await ensureFreshToken(integration, tenantId, actorId);
-  const refresher = buildCredentialRefresher(fresh, tenantId, actorId);
+  const fresh = await ensureFreshToken(integration, tenantId, actorId, updateMethod);
+  const refresher = buildCredentialRefresher(fresh, tenantId, actorId, updateMethod);
 
   const mediaResult = await syncMediaFields({
     tenantId,
@@ -487,7 +487,7 @@ async function pushUpdate(
     },
     refresher
   );
-  await reconcileCredentialStatus(fresh, result.status);
+  await reconcileCredentialStatus(fresh, result.status, updateMethod);
   await logConnectorAccess({
     tenantId,
     featureId: integration.featureId,
@@ -626,8 +626,8 @@ export async function deleteItem(tenantId: string, featureKey: string, id: strin
       details: { reason: "delete_lookup_key_resolution", fields: confidentialFields, itemId: existing.id },
     });
   }
-  const freshForDelete = await ensureFreshToken(integration, tenantId, actorId);
-  const deleteRefresher = buildCredentialRefresher(freshForDelete, tenantId, actorId);
+  const freshForDelete = await ensureFreshToken(integration, tenantId, actorId, "DELETE");
+  const deleteRefresher = buildCredentialRefresher(freshForDelete, tenantId, actorId, "DELETE");
   const result = await callWebsiteApi(
     { ...freshForDelete, isSingleton: integration.feature.isSingleton },
     "DELETE",
@@ -640,7 +640,7 @@ export async function deleteItem(tenantId: string, featureKey: string, id: strin
     },
     deleteRefresher
   );
-  await reconcileCredentialStatus(freshForDelete, result.status);
+  await reconcileCredentialStatus(freshForDelete, result.status, "DELETE");
   await logConnectorAccess({
     tenantId,
     featureId: integration.featureId,
@@ -723,12 +723,12 @@ export async function importItems(
   const context = { tenantId, contentType: featureKey };
 
   const confidentialFields = getConfidentialFields(integration);
-  const freshForImport = await ensureFreshToken(integration, tenantId, actorId);
-  const importRefresher = buildCredentialRefresher(freshForImport, tenantId, actorId);
+  const freshForImport = await ensureFreshToken(integration, tenantId, actorId, "GET");
+  const importRefresher = buildCredentialRefresher(freshForImport, tenantId, actorId, "GET");
 
   if (integration.feature.isSingleton) {
     const result = await fetchWebsiteApiSingle(freshForImport, context, filters, importRefresher);
-    await reconcileCredentialStatus(freshForImport, result.status);
+    await reconcileCredentialStatus(freshForImport, result.status, "GET");
     if (!result.success || !result.item) {
       await logConnectorAccess({
         tenantId,
@@ -786,7 +786,7 @@ export async function importItems(
   }
 
   const result = await fetchWebsiteApi(freshForImport, context, filters, importRefresher);
-  await reconcileCredentialStatus(freshForImport, result.status);
+  await reconcileCredentialStatus(freshForImport, result.status, "GET");
   if (!result.success || !result.items) {
     await logConnectorAccess({
       tenantId,

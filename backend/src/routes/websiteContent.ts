@@ -20,7 +20,7 @@ import {
   getSyncStatusCounts,
   importFiltersSchema,
 } from "../lib/websiteContentService";
-import { createUploader, publicUrlFor, handleUpload } from "../lib/upload";
+import { createMemoryUploader, saveBufferForTenant, handleUpload } from "../lib/upload";
 
 // Business-Admin-facing: generic CRUD over whatever features this tenant
 // has configured an external integration for (via routes/connectorConfig.ts)
@@ -41,16 +41,17 @@ import { createUploader, publicUrlFor, handleUpload } from "../lib/upload";
 const router = Router();
 router.use(authenticate, requirePasswordSet, resolveTenant, authorize("ADMIN"));
 
-const upload = createUploader("website-content");
+const upload = createMemoryUploader();
 
 // Feature-scoped (not content-type-agnostic anymore) so the write-access
 // check below can be applied per feature, same as create/update/delete.
-router.post("/:contentType/uploads", requireContentWriteAccess, handleUpload(upload.single("file")), (req, res) => {
+router.post("/:contentType/uploads", requireContentWriteAccess, handleUpload(upload.single("file")), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: "No file uploaded" });
     return;
   }
-  res.status(201).json({ url: publicUrlFor(req.tenantId!, "website-content", req.file.filename) });
+  const url = await saveBufferForTenant(req.tenantId!, "website-content", req.file.originalname, req.file.buffer);
+  res.status(201).json({ url });
 });
 
 // Active features for this tenant, with everything the dashboard needs to

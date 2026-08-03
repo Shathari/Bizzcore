@@ -20,16 +20,23 @@ import { resolveDataSource } from "./connectorLogin";
 // Admin's routes/superAdminWebsiteIntegrations.ts only reads from this
 // module (listIntegrationStatuses/listSchemaSnapshots), never writes.
 
-// "login" is base-integration-only (see lib/connectorLogin.ts) — its
-// credentials (loginUrl/email/password) go through the dedicated
-// saveLoginCredentials flow, never through this file's generic
-// `credentials` field, so it's deliberately excluded from
-// ENDPOINT_AUTH_TYPES (a per-method override can't be "login") while still
-// being a valid value for the shared integration-level authType.
+// "login" credentials (loginUrl/email/password) always go through the
+// dedicated saveLoginCredentials flow (lib/connectorLogin.ts) — a real
+// login, not a static value — never through this file's generic
+// `credentials` field. That's true whether "login" is picked as the shared
+// integration-level authType OR as one method's own override: either way,
+// the actual token lives on the shared DataSource (one per connected
+// website, found by baseUrl origin), never in this integration's or this
+// endpoint's own encryptedCredentials. "login" IS included in
+// ENDPOINT_AUTH_TYPES for exactly that reason — a tenant whose site already
+// has a working login (Data Source Access) for one feature/method should
+// be able to point ANY other method at that same login instead of pasting
+// a static token, without the credential-required validation below ever
+// asking it for one (see the endpoints validation loop's "login" branch).
 export const AUTH_TYPES = ["none", "bearer", "apiKey", "basic", "customHeaders", "login"] as const;
 export type AuthType = (typeof AUTH_TYPES)[number];
 
-const ENDPOINT_AUTH_TYPES = ["none", "bearer", "apiKey", "basic", "customHeaders"] as const;
+const ENDPOINT_AUTH_TYPES = ["none", "bearer", "apiKey", "basic", "customHeaders", "login"] as const;
 
 export const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 export type HttpMethod = (typeof HTTP_METHODS)[number];
@@ -69,9 +76,11 @@ const credentialsSchemaByType: Record<AuthType, z.ZodTypeAny> = {
   customHeaders: z
     .record(z.string().trim().min(1))
     .refine((obj) => Object.keys(obj).length > 0, "At least one header is required"),
-  // Never actually reached — saveIntegration rejects authType "login"
-  // before this map is consulted (see its own comment). Present only so
-  // the Record<AuthType, ...> type stays total.
+  // Never actually reached — saveIntegration rejects a "login" shared
+  // authType with credentials attached, and its endpoints validation loop
+  // special-cases "login" before ever consulting this map for an override
+  // (see both call sites' own comments). Present only so the
+  // Record<AuthType, ...> type stays total.
   login: z.never(),
 };
 
@@ -82,7 +91,9 @@ const endpointSchema = z.object({
   url: httpsUrl().optional().or(z.literal("")),
   // Omitted/null = inherit the integration's shared authType. Only set
   // this when the method genuinely needs different auth than the rest.
-  // "login" isn't offered here — see ENDPOINT_AUTH_TYPES.
+  // "login" is a valid override value — see ENDPOINT_AUTH_TYPES — but never
+  // carries `credentials` of its own (the token lives on the shared
+  // DataSource; see saveIntegration's endpoints validation loop).
   authType: z.enum(ENDPOINT_AUTH_TYPES).nullable().optional(),
   credentials: z.record(z.string()).optional(),
 });
@@ -337,6 +348,21 @@ export async function saveIntegration(
     const existingByMethod = new Map(existing?.endpoints.map((e) => [e.method, e]) ?? []);
     for (const ep of endpoints) {
       if (!ep.authType || ep.authType === "none") continue;
+      // "login" never takes a pasted-in token — it reuses this site's
+      // Data Source Access login (the same DataSource this save just
+      // resolved above by baseUrl origin), so the only thing to check is
+      // that a login has actually been set up for this site yet. No
+      // credentials to validate for this branch (see the endpointSchema
+      // comment).
+      if (ep.authType === "login") {
+        if (!dataSource.loginUrl) {
+          return {
+            ok: false,
+            error: `${ep.method}: This site has no Data Source Access login set up yet — set one up first, then select "Use site login" here.`,
+          };
+        }
+        continue;
+      }
       const existingRow = existingByMethod.get(ep.method);
       const hasNewCreds = ep.credentials !== undefined;
       if (!hasNewCreds && existingRow?.authType === ep.authType && existingRow.encryptedCredentials) continue;
@@ -414,7 +440,11 @@ export async function saveIntegration(
       for (const ep of endpoints) {
         const existingRow = existingByMethod.get(ep.method);
         let epEncryptedCredentials = existingRow?.encryptedCredentials ?? null;
-        if (!ep.authType || ep.authType === "none") {
+        if (!ep.authType || ep.authType === "none" || ep.authType === "login") {
+          // "login" is never given its own encryptedCredentials — its token
+          // lives on the shared DataSource (see resolveEndpoint/
+          // resolveWriteRequest in lib/websiteApiClient.ts), so any static
+          // credentials left over from a previous auth type are cleared.
           epEncryptedCredentials = null;
         } else if (ep.credentials !== undefined) {
           epEncryptedCredentials = encryptCredentials(credentialsSchemaByType[ep.authType].parse(ep.credentials));
@@ -540,15 +570,29 @@ async function resolveCredentialsForTest(
   method: HttpMethod,
   authType: AuthType,
   credentials: Record<string, string> | undefined
-): Promise<{ ok: true; encryptedCredentials: string | null } | { ok: false; error: string }> {
-  if (authType === "none") return { ok: true, encryptedCredentials: null };
+): Promise<{ ok: true; encryptedCredentials: string | null; accessTokenEncrypted: string | null } | { ok: false; error: string }> {
+  if (authType === "none") return { ok: true, encryptedCredentials: null, accessTokenEncrypted: null };
+
+  // "login" has no pastable/testable credentials of its own — it always
+  // tests with whatever's currently on the shared DataSource (same token a
+  // real call would use), never a `credentials` value from the form.
+  if (authType === "login") {
+    const integration = await prisma.websiteIntegration.findUnique({
+      where: { tenantId_featureId: { tenantId, featureId } },
+      include: { dataSource: true },
+    });
+    if (!integration?.dataSource?.accessTokenEncrypted) {
+      return { ok: false, error: 'This site has no Data Source Access login set up yet — set one up, then test again.' };
+    }
+    return { ok: true, encryptedCredentials: null, accessTokenEncrypted: integration.dataSource.accessTokenEncrypted };
+  }
 
   if (credentials !== undefined) {
     const credParsed = credentialsSchemaByType[authType].safeParse(credentials);
     if (!credParsed.success) {
       return { ok: false, error: credParsed.error.issues[0]?.message ?? "Invalid credentials for this auth type" };
     }
-    return { ok: true, encryptedCredentials: encryptCredentials(credParsed.data) };
+    return { ok: true, encryptedCredentials: encryptCredentials(credParsed.data), accessTokenEncrypted: null };
   }
 
   const integration = await prisma.websiteIntegration.findUnique({
@@ -557,10 +601,10 @@ async function resolveCredentialsForTest(
   });
   const override = integration?.endpoints.find((e) => e.method === method);
   if (override?.authType === authType && override.encryptedCredentials) {
-    return { ok: true, encryptedCredentials: override.encryptedCredentials };
+    return { ok: true, encryptedCredentials: override.encryptedCredentials, accessTokenEncrypted: null };
   }
   if (integration?.authType === authType && integration.encryptedCredentials) {
-    return { ok: true, encryptedCredentials: integration.encryptedCredentials };
+    return { ok: true, encryptedCredentials: integration.encryptedCredentials, accessTokenEncrypted: null };
   }
   return { ok: false, error: "No saved credentials for this auth type yet — enter them to test." };
 }
@@ -607,7 +651,7 @@ export async function testEndpointConnection(
   const resolved = await resolveCredentialsForTest(tenantId, featureId, input.method, input.authType, input.credentials);
   if (!resolved.ok) return logResult({ ok: false, latencyMs: 0, message: resolved.error });
 
-  const headers = buildAuthHeaders(input.authType, resolved.encryptedCredentials);
+  const headers = buildAuthHeaders(input.authType, resolved.encryptedCredentials, resolved.accessTokenEncrypted);
 
   const startedAt = Date.now();
   let resp: Response;
@@ -704,7 +748,7 @@ export async function discoverAndStoreSchema(
 
   const responseMapping = integration?.responseMapping ? (JSON.parse(integration.responseMapping) as { listPath?: string }) : null;
 
-  const headers = buildAuthHeaders(input.authType, resolved.encryptedCredentials);
+  const headers = buildAuthHeaders(input.authType, resolved.encryptedCredentials, resolved.accessTokenEncrypted);
   const result = await discoverSchema(input.url, headers, responseMapping?.listPath, { tenantId, contentType: featureKey });
   if (!result.success || !result.fields) {
     return logResult({ ok: false, error: result.error ?? "Could not analyze this endpoint." });

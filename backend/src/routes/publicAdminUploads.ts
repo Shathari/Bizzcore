@@ -3,7 +3,17 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
-import { UPLOADS_ROOT, handleUpload } from "../lib/upload";
+import { handleUpload } from "../lib/upload";
+
+// This route's own local-disk root — deliberately NOT lib/upload.ts's
+// object-storage-backed path. This route simulates a TENANT's own
+// destination site (see its file comment below), which is a separate
+// filesystem/server in the real world; it has nothing to do with BizzCore's
+// own tenant uploads (product photos, logos, etc.), which all live in R2
+// now (see lib/upload.ts, lib/objectStorage.ts). Ephemeral local disk is
+// fine here specifically because this route is dev/demo-only and never hit
+// in production.
+export const MOCK_UPLOADS_ROOT = path.join(__dirname, "..", "..", "uploads");
 
 // Same accepted types/size cap as the dashboard's own upload endpoint
 // (lib/upload.ts) — a reference implementation should model the same
@@ -29,7 +39,7 @@ const DEST_SUBFOLDER = "_mock-destination-site";
 const upload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => {
-      const dir = path.join(UPLOADS_ROOT, DEST_SUBFOLDER);
+      const dir = path.join(MOCK_UPLOADS_ROOT, DEST_SUBFOLDER);
       fs.mkdirSync(dir, { recursive: true });
       cb(null, dir);
     },

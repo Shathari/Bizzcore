@@ -25,7 +25,7 @@ import logo from "../assets/logo.png";
 
 const WHATSAPP_NUMBER = "919762098549"; // digits only, no "+", for the wa.me link
 const WHATSAPP_DISPLAY = "+91 97620 98549";
-const CONTACT_EMAIL = "bizzcore225@gmail.com";
+const CONTACT_EMAIL = "support@bizzcore.in";
 
 function waHref(message: string) {
   return `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(message)}`;

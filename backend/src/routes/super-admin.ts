@@ -1,8 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
-import fs from "fs";
-import path from "path";
 import { prisma } from "../lib/prisma";
 import { authenticate } from "../middleware/auth";
 import { authorize } from "../middleware/authorize";
@@ -10,7 +8,7 @@ import { requirePasswordSet } from "../middleware/requirePasswordSet";
 import { generateTempPassword } from "../lib/password";
 import { sendEmail } from "../integrations/email";
 import { sendPlatformWhatsAppMessage, type WhatsAppResult } from "../integrations/whatsapp";
-import { createMemoryUploader, saveBufferForTenant, deleteUploadedFile, handleUpload, UPLOADS_ROOT } from "../lib/upload";
+import { createMemoryUploader, saveBufferForTenant, deleteUploadedFile, deleteAllTenantUploads, handleUpload } from "../lib/upload";
 
 // Super Admin manages account status/credentials, not tenant business data
 // (keeps a clean audit trail — see spec). Every route here intentionally
@@ -174,7 +172,7 @@ router.post("/businesses", handleUpload(logoUpload.single("logo")), async (req, 
   // per-request tenant-scoped uploader — see saveBufferForTenant's comment.
   let logoUrl: string | null = null;
   if (req.file) {
-    logoUrl = saveBufferForTenant(tenant.id, "branding", req.file.originalname, req.file.buffer);
+    logoUrl = await saveBufferForTenant(tenant.id, "branding", req.file.originalname, req.file.buffer);
     await prisma.tenant.update({ where: { id: tenant.id }, data: { logoUrl } });
   }
 
@@ -334,7 +332,7 @@ router.patch("/businesses/:id", handleUpload(logoUpload.single("logo")), async (
 
   let logoUrl = tenant.logoUrl;
   if (req.file) {
-    logoUrl = saveBufferForTenant(tenant.id, "branding", req.file.originalname, req.file.buffer);
+    logoUrl = await saveBufferForTenant(tenant.id, "branding", req.file.originalname, req.file.buffer);
   }
 
   const before = {
@@ -451,11 +449,11 @@ router.delete("/businesses/:id", async (req, res) => {
 
     await prisma.$transaction([prisma.tenant.delete({ where: { id: tenant.id } })]);
 
-    // Best-effort filesystem cleanup — not transactional with the (already
-    // committed, irreversible) DB delete above, so an fs error is logged,
-    // not surfaced as a request failure.
-    fs.rm(path.join(UPLOADS_ROOT, tenant.id), { recursive: true, force: true }, (err) => {
-      if (err) console.error(`Failed to remove uploads for permanently deleted tenant ${tenant.id}`, err);
+    // Best-effort object storage cleanup — not transactional with the
+    // (already committed, irreversible) DB delete above, so a failure is
+    // logged, not surfaced as a request failure.
+    deleteAllTenantUploads(tenant.id).catch((err) => {
+      console.error(`Failed to remove uploads for permanently deleted tenant ${tenant.id}`, err);
     });
 
     await logAudit(req.user!.id, "BUSINESS_PERMANENTLY_DELETED", null, snapshot);

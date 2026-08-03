@@ -1,24 +1,49 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import fs from "fs";
-import path from "path";
 import request from "supertest";
 import { app, createTenantWithAdmin, configureIntegration, loginAs, grantPermissivePlan, createCustomFeature } from "./helpers";
 import { prisma } from "../src/lib/prisma";
-import { UPLOADS_ROOT, publicUrlFor } from "../src/lib/upload";
+import { saveBufferForTenant } from "../src/lib/upload";
+
+// In-memory fake for lib/objectStorage.ts — keeps this suite fully offline
+// (no real R2 credentials needed in .env.test, no real network calls),
+// same "mock the external I/O, test the business logic" approach already
+// used for the tenant destination-site calls below (fetchSpy). Real R2
+// behavior (a genuine upload surviving a real restart) is proven by the
+// live test run separately, not by this suite.
+const FAKE_PUBLIC_BASE = "https://fake-object-storage.test";
+const fakeStore = new Map<string, Buffer>();
+vi.mock("../src/lib/objectStorage", () => ({
+  uploadObject: vi.fn(async (key: string, buffer: Buffer) => {
+    fakeStore.set(key, buffer);
+    return `${FAKE_PUBLIC_BASE}/${key}`;
+  }),
+  getObjectBuffer: vi.fn(async (key: string) => {
+    const buf = fakeStore.get(key);
+    if (!buf) throw new Error(`Object not found: ${key}`);
+    return buf;
+  }),
+  deleteObject: vi.fn(async (key: string) => {
+    fakeStore.delete(key);
+  }),
+  deleteObjectsByPrefix: vi.fn(async (prefix: string) => {
+    for (const key of [...fakeStore.keys()]) {
+      if (key.startsWith(prefix)) fakeStore.delete(key);
+    }
+  }),
+  keyFromPublicUrl: vi.fn((url: string) => (url.startsWith(`${FAKE_PUBLIC_BASE}/`) ? url.slice(FAKE_PUBLIC_BASE.length + 1) : null)),
+  isOurPublicUrl: vi.fn((url: string) => url.startsWith(`${FAKE_PUBLIC_BASE}/`)),
+}));
 
 // End-to-end proof of the automatic media-sync pipeline (lib/mediaSync.ts,
 // wired into lib/websiteContentService.ts's pushCreate/pushUpdate/
-// pushRetryCreate): a local /uploads/... image field gets uploaded to the
+// pushRetryCreate): an object-storage image field gets uploaded to the
 // tenant's destination site (POST {origin}/api/public/admin/uploads) BEFORE
 // the JSON record is pushed, the outbound payload carries the returned
-// destination URL, the item's own local storage keeps the local path
-// unchanged, an unchanged image is never re-uploaded, and an upload failure
-// aborts the record entirely (never reaches the JSON push).
-function createFakeUpload(tenantId: string, filename: string): string {
-  const dir = path.join(UPLOADS_ROOT, tenantId, "website-content");
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, filename), Buffer.from("fake-image-bytes"));
-  return publicUrlFor(tenantId, "website-content", filename);
+// destination URL, the item's own local storage keeps the object-storage
+// URL unchanged, an unchanged image is never re-uploaded, and an upload
+// failure aborts the record entirely (never reaches the JSON push).
+async function createFakeUpload(tenantId: string, filename: string): Promise<string> {
+  return saveBufferForTenant(tenantId, "website-content", filename, Buffer.from("fake-image-bytes"));
 }
 
 describe("media sync: automatic image upload before JSON push", () => {
@@ -36,7 +61,7 @@ describe("media sync: automatic image upload before JSON push", () => {
     await grantPermissivePlan(tenant.id);
     const cookie = await loginAs(admin.email);
     await configureIntegration(tenant.id, "PRODUCTS", "https://tenant-site.example/api/public/admin/products", { permissionLevel: "MANAGE" });
-    const localPath = createFakeUpload(tenant.id, "prod-1.webp");
+    const localPath = await createFakeUpload(tenant.id, "prod-1.webp");
 
     fetchSpy.mockImplementation(async (url: unknown) => {
       const u = String(url);
@@ -76,7 +101,7 @@ describe("media sync: automatic image upload before JSON push", () => {
     await grantPermissivePlan(tenant.id);
     const cookie = await loginAs(admin.email);
     await configureIntegration(tenant.id, "PRODUCTS", "https://tenant-site.example/api/public/admin/products", { permissionLevel: "MANAGE" });
-    const localPath = createFakeUpload(tenant.id, "prod-2.webp");
+    const localPath = await createFakeUpload(tenant.id, "prod-2.webp");
 
     fetchSpy.mockImplementation(async (url: unknown) => {
       const u = String(url);
@@ -109,7 +134,7 @@ describe("media sync: automatic image upload before JSON push", () => {
     await grantPermissivePlan(tenant.id);
     const cookie = await loginAs(admin.email);
     await configureIntegration(tenant.id, "PRODUCTS", "https://tenant-site.example/api/public/admin/products", { permissionLevel: "MANAGE" });
-    const firstLocalPath = createFakeUpload(tenant.id, "first.webp");
+    const firstLocalPath = await createFakeUpload(tenant.id, "first.webp");
 
     let uploadCount = 0;
     fetchSpy.mockImplementation(async (url: unknown) => {
@@ -128,7 +153,7 @@ describe("media sync: automatic image upload before JSON push", () => {
     expect(created.status).toBe(201);
     expect(uploadCount).toBe(1);
 
-    const secondLocalPath = createFakeUpload(tenant.id, "second.webp");
+    const secondLocalPath = await createFakeUpload(tenant.id, "second.webp");
     const updated = await request(app)
       .patch(`/api/website-content/PRODUCTS/${created.body.id}`)
       .set("Cookie", cookie)
@@ -146,7 +171,7 @@ describe("media sync: automatic image upload before JSON push", () => {
     await grantPermissivePlan(tenant.id);
     const cookie = await loginAs(admin.email);
     await configureIntegration(tenant.id, "PRODUCTS", "https://tenant-site.example/api/public/admin/products", { permissionLevel: "MANAGE" });
-    const localPath = createFakeUpload(tenant.id, "prod-3.webp");
+    const localPath = await createFakeUpload(tenant.id, "prod-3.webp");
 
     fetchSpy.mockImplementation(async (url: unknown) => {
       const u = String(url);
@@ -177,7 +202,7 @@ describe("media sync: automatic image upload before JSON push", () => {
     await grantPermissivePlan(tenant.id);
     const cookie = await loginAs(admin.email);
     await configureIntegration(tenant.id, "PRODUCTS", "https://tenant-site.example/api/public/admin/products", { permissionLevel: "MANAGE" });
-    const localPath = createFakeUpload(tenant.id, "relative-test.webp");
+    const localPath = await createFakeUpload(tenant.id, "relative-test.webp");
 
     fetchSpy.mockImplementation(async (url: unknown) => {
       const u = String(url);
@@ -218,8 +243,8 @@ describe("media sync: automatic image upload before JSON push", () => {
     });
     await configureIntegration(tenant.id, "TEAM_MEMBERS", "https://tenant-site.example/api/public/admin/team", { permissionLevel: "MANAGE" });
 
-    const avatarPath = createFakeUpload(tenant.id, "avatar.webp");
-    const coverPath = createFakeUpload(tenant.id, "cover.webp");
+    const avatarPath = await createFakeUpload(tenant.id, "avatar.webp");
+    const coverPath = await createFakeUpload(tenant.id, "cover.webp");
     const uploadedUrls: string[] = [];
 
     fetchSpy.mockImplementation(async (url: unknown) => {
@@ -267,8 +292,8 @@ describe("media sync: automatic image upload before JSON push", () => {
     });
     await configureIntegration(tenant.id, "EVENTS_TEST", "https://tenant-site.example/api/public/admin/events", { permissionLevel: "MANAGE" });
 
-    const bannerPath = createFakeUpload(tenant.id, "banner.webp");
-    const thumbPath = createFakeUpload(tenant.id, "thumb.webp");
+    const bannerPath = await createFakeUpload(tenant.id, "banner.webp");
+    const thumbPath = await createFakeUpload(tenant.id, "thumb.webp");
 
     let uploadCallCount = 0;
     fetchSpy.mockImplementation(async (url: unknown) => {

@@ -22,6 +22,13 @@ function getFrom(): string {
   return process.env.EMAIL_FROM ?? process.env.SMTP_FROM ?? "BizzCore <no-reply@bizzcore.example>";
 }
 
+// Automated system mail (credentials, password resets, alerts) sends from
+// noreply@ but should route any reply a recipient sends back to a real
+// inbox someone reads, not into the void.
+function getReplyTo(): string {
+  return process.env.EMAIL_REPLY_TO ?? "BizzCore <support@bizzcore.in>";
+}
+
 function isConfigured(provider: Provider): boolean {
   switch (provider) {
     case "resend":
@@ -52,7 +59,7 @@ function getTransporter(): Transporter {
   return transporter;
 }
 
-type SendParams = { to: string; subject: string; text: string; html?: string };
+type SendParams = { to: string; subject: string; text: string; html?: string; replyTo?: string };
 
 // One provider attempt's outcome, before the retry loop wraps it.
 // `retryable` distinguishes a transient failure (network error, 5xx, 429 —
@@ -84,6 +91,7 @@ async function attemptResend(params: SendParams): Promise<AttemptResult> {
         subject: params.subject,
         text: params.text,
         html: params.html,
+        reply_to: params.replyTo ?? getReplyTo(),
       }),
     });
     if (!resp.ok) {
@@ -112,6 +120,7 @@ async function attemptSendgrid(params: SendParams): Promise<AttemptResult> {
       body: JSON.stringify({
         personalizations: [{ to: [{ email: params.to }] }],
         from,
+        reply_to: parseFromHeader(params.replyTo ?? getReplyTo()),
         subject: params.subject,
         content: [
           { type: "text/plain", value: params.text },
@@ -145,6 +154,7 @@ async function attemptPostmark(params: SendParams): Promise<AttemptResult> {
       body: JSON.stringify({
         From: getFrom(),
         To: params.to,
+        ReplyTo: params.replyTo ?? getReplyTo(),
         Subject: params.subject,
         TextBody: params.text,
         HtmlBody: params.html,
@@ -169,6 +179,7 @@ async function attemptSmtp(params: SendParams): Promise<AttemptResult> {
     await getTransporter().sendMail({
       from: getFrom(),
       to: params.to,
+      replyTo: params.replyTo ?? getReplyTo(),
       subject: params.subject,
       text: params.text,
       html: params.html,

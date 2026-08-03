@@ -16,6 +16,22 @@ const router = Router();
 const COOKIE_NAME = process.env.COOKIE_NAME ?? "bizzcore_session";
 const isProduction = process.env.NODE_ENV === "production";
 
+// Browsers drop a SameSite=None cookie that isn't also Secure (HTTPS-only)
+// — fine in real production (always HTTPS), but that means the session
+// cookie can never persist on a plain http://localhost dev/demo session,
+// regardless of NODE_ENV. This is an explicit, opt-in-only escape hatch for
+// exactly that case — never enabled unless COOKIE_ALLOW_INSECURE_LOCAL is
+// set AND NODE_ENV isn't "production", so it can't affect a real deployment
+// even if the env var were set there by mistake.
+const ALLOW_INSECURE_LOCAL_COOKIES = process.env.COOKIE_ALLOW_INSECURE_LOCAL === "true" && !isProduction;
+
+function sessionCookieOptions(defaultSameSite: "none" | "lax") {
+  if (ALLOW_INSECURE_LOCAL_COOKIES) {
+    return { httpOnly: true, secure: false, sameSite: "lax" as const, maxAge: 7 * 24 * 60 * 60 * 1000 };
+  }
+  return { httpOnly: true, secure: isProduction, sameSite: defaultSameSite, maxAge: 7 * 24 * 60 * 60 * 1000 };
+}
+
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
@@ -65,12 +81,7 @@ router.post("/login", loginRateLimiter, async (req, res) => {
     mustChangePassword: user.mustChangePassword,
   });
 
-  res.cookie(COOKIE_NAME, token, {
-  httpOnly: true,
-  secure: isProduction,
-  sameSite: "none",
-  maxAge: 7 * 24 * 60 * 60 * 1000,
-});
+  res.cookie(COOKIE_NAME, token, sessionCookieOptions("none"));
 
   await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
 
@@ -146,12 +157,7 @@ router.post("/change-password", authenticate, async (req, res) => {
     tenantId: user.tenantId,
     mustChangePassword: false,
   });
-  res.cookie(COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: "lax",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-  });
+  res.cookie(COOKIE_NAME, token, sessionCookieOptions("lax"));
 
   res.json({ ok: true });
 });

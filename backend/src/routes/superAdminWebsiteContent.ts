@@ -47,7 +47,7 @@ router.post("/:tenantId/uploads", handleUpload(upload.single("file")), async (re
     res.status(400).json({ error: "No file uploaded" });
     return;
   }
-  const url = saveBufferForTenant(tenantId, "website-content", req.file.originalname, req.file.buffer);
+  const url = await saveBufferForTenant(tenantId, "website-content", req.file.originalname, req.file.buffer);
   res.status(201).json({ url });
 });
 

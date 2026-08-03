@@ -111,7 +111,7 @@ export default function Settings() {
         </Card>
       </div>
 
-      <div className="mt-6">
+      <div id="data-source-access" className="mt-6 scroll-mt-6">
         <Card>
           <div className="flex items-center gap-2">
             <Globe2 className="h-4 w-4 text-neutral-400" />

@@ -1,7 +1,6 @@
-import fs from "fs";
 import path from "path";
 import { fetchWithTimeout, WRITEBACK_TIMEOUT_MS, buildAuthHeaders, type CredentialRefresher } from "./websiteApiClient";
-import { UPLOADS_ROOT } from "./upload";
+import { getObjectBuffer, keyFromPublicUrl, isOurPublicUrl } from "./objectStorage";
 import { logger } from "./logger";
 import type { FieldDef } from "./featureCatalog";
 
@@ -13,6 +12,11 @@ import type { FieldDef } from "./featureCatalog";
 // a brand-new custom feature, anything. No feature key or field name is
 // ever hardcoded here; see detectImageFieldKeys.
 
+// `localPath` — kept as-is, not renamed to e.g. "sourceUrl", even though it
+// now holds an object-storage URL rather than a literal filesystem path:
+// this shape is already persisted as JSON (WebsiteContentItem.mediaUploads)
+// on existing rows, and a field rename here would silently stop matching
+// that already-stored key.
 export type MediaUploadCacheEntry = { localPath: string; destinationUrl: string };
 export type MediaUploadCache = Record<string, MediaUploadCacheEntry>;
 
@@ -57,8 +61,14 @@ export function deriveUploadUrl(baseUrl: string): string {
   return new URL(baseUrl).origin + UPLOAD_PATH;
 }
 
+// "Our own not-yet-synced upload, still needs pushing to the tenant's
+// destination site" — true for one of OUR object storage URLs (see
+// lib/objectStorage.ts), false for anything else (empty, already an
+// external URL from a prior import, or a legacy local /uploads/... path
+// from before the object-storage migration — nothing to sync for that
+// last case either, since the local file it pointed at is long gone).
 function isLocalUploadPath(value: unknown): value is string {
-  return typeof value === "string" && value.startsWith("/uploads/");
+  return typeof value === "string" && isOurPublicUrl(value);
 }
 
 // Same extension set lib/upload.ts already accepts on the way IN — mirrored
@@ -97,12 +107,13 @@ function toAbsoluteDestinationUrl(url: string, uploadUrl: string): string {
   return `${origin}${url.startsWith("/") ? "" : "/"}${url}`;
 }
 
-// Inverse of lib/upload.ts's publicUrlFor — resolves a stored `/uploads/...`
-// dashboard path back to the real file on disk, same convention already
-// used by that file's own deleteUploadedFile.
-function localPathToFilesystemPath(publicUrl: string): string {
-  const relative = publicUrl.replace(/^\/uploads\//, "");
-  return path.join(UPLOADS_ROOT, relative);
+// Resolves a stored object-storage URL back to its key — same convention
+// lib/upload.ts's own deleteUploadedFile uses. Only ever called on a value
+// isLocalUploadPath already confirmed is one of ours, so this never
+// returns null in practice; the fallback exists purely to satisfy the
+// type checker without an unchecked `!`.
+function localPathToObjectKey(publicUrl: string): string {
+  return keyFromPublicUrl(publicUrl) ?? publicUrl;
 }
 
 type UploadContext = { tenantId: string; contentType: string; itemId?: string; fieldKey: string };
@@ -118,22 +129,28 @@ type UploadImageResult = { ok: true; url: string } | { ok: false; error: string 
 // credential retrying the exact same not-yet-accepted request is safe.
 async function uploadImageToDestination(
   uploadUrl: string,
-  localFilePath: string,
+  objectKey: string,
   headers: Record<string, string>,
   context: UploadContext,
   credentialRefresher?: CredentialRefresher
 ): Promise<UploadImageResult> {
   let fileBuffer: Buffer;
   try {
-    fileBuffer = fs.readFileSync(localFilePath);
+    // Object storage, not local disk — this read used to be fs.readFileSync
+    // against this process's own (ephemeral, per-instance) filesystem,
+    // which is exactly what produced ENOENT the moment a Render
+    // restart/redeploy happened between the original upload and this sync
+    // attempt. The object this key points at survives that; there's no
+    // "which instance" for it to have been lost from.
+    fileBuffer = await getObjectBuffer(objectKey);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Could not read the local file";
-    logger.error({ mediaSync: { ...context, uploadUrl } }, `media sync: local file missing on disk, upload skipped — ${message}`);
-    return { ok: false, error: `Local file not found: ${message}` };
+    const message = err instanceof Error ? err.message : "Could not read the uploaded file";
+    logger.error({ mediaSync: { ...context, uploadUrl } }, `media sync: object storage read failed, upload skipped — ${message}`);
+    return { ok: false, error: `Uploaded file not found: ${message}` };
   }
 
   const form = new FormData();
-  form.append(UPLOAD_FIELD_NAME, new Blob([fileBuffer], { type: inferMimeType(localFilePath) }), path.basename(localFilePath));
+  form.append(UPLOAD_FIELD_NAME, new Blob([fileBuffer], { type: inferMimeType(objectKey) }), path.basename(objectKey));
 
   logger.info({ mediaSync: { ...context, uploadUrl } }, "media sync: uploading image");
 
@@ -160,7 +177,7 @@ async function uploadImageToDestination(
     const refresh = await credentialRefresher();
     if (refresh.refreshed) {
       logger.info({ mediaSync: { ...context, uploadUrl } }, "media sync: 401 received, retrying once with a refreshed credential");
-      return uploadImageToDestination(uploadUrl, localFilePath, { ...headers, ...refresh.headers }, context);
+      return uploadImageToDestination(uploadUrl, objectKey, { ...headers, ...refresh.headers }, context);
     }
     logger.warn({ mediaSync: { ...context, uploadUrl } }, "media sync: 401 received, credential refresh unavailable or failed");
   }
@@ -269,7 +286,7 @@ export async function syncMediaFields(params: SyncMediaFieldsParams): Promise<Sy
 
     const result = await uploadImageToDestination(
       uploadUrl,
-      localPathToFilesystemPath(localPath),
+      localPathToObjectKey(localPath),
       headers,
       { tenantId, contentType, itemId, fieldKey: key },
       credentialRefresher

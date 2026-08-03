@@ -63,14 +63,34 @@ export type EndpointOverride = {
 export type CredentialRefreshResult = { refreshed: true; headers: Record<string, string> } | { refreshed: false };
 export type CredentialRefresher = () => Promise<CredentialRefreshResult>;
 
+// Shared "what auth actually applies to THIS method" resolution — a
+// method's own EndpointOverride authType wins when set, otherwise it
+// inherits the integration's shared authType. Exported so
+// lib/connectorLogin.ts's token-refresh machinery (ensureFreshToken,
+// buildCredentialRefresher, reconcileCredentialStatus) can tell whether a
+// specific call is "login"-authenticated even when that's only true for
+// one method's override, not the shared authType — the DataSource token is
+// per-site, not per-method, so any method backed by it needs the exact same
+// refresh handling the shared/base "login" case already gets.
+export function resolveMethodAuthType(
+  integration: { authType: string; endpoints?: { method: string; authType: string | null }[] },
+  method: string
+): string {
+  const override = integration.endpoints?.find((e) => e.method === method);
+  return override?.authType ?? integration.authType;
+}
+
 type IntegrationConfig = {
   baseUrl: string;
   authType: string;
   encryptedCredentials: string | null;
-  // authType "login" only — see connectorLogin.ts. The token lives on the
-  // shared DataSource (one login per connected website, not per feature),
-  // never on a per-method EndpointOverride (login-based auth is
-  // base-integration-only, not supported per-method).
+  // authType "login" (base-level OR a per-method EndpointOverride) — see
+  // connectorLogin.ts. The token itself always lives on the shared
+  // DataSource (one login per connected website, not per feature/method);
+  // resolveEndpoint/resolveWriteRequest below pull it in whenever the
+  // EFFECTIVE authType for the method being called is "login", regardless
+  // of whether that came from the shared authType or a method's own
+  // override.
   dataSource?: { accessTokenEncrypted: string | null } | null;
   fieldMapping?: string | null;
   responseMapping?: string | null;
@@ -117,11 +137,21 @@ function resolveEndpoint(
   externalId: string | null
 ): { url: string; authType: string; encryptedCredentials: string | null; accessTokenEncrypted: string | null } {
   const override = integration.endpoints?.find((e) => e.method === method);
+  const authType = override?.authType ?? integration.authType;
+  // "login" never has its own static credentials — encryptedCredentials
+  // only comes from an override when that override picked a genuinely
+  // static auth type (bearer/apiKey/basic/customHeaders).
+  const encryptedCredentials =
+    override?.authType && override.authType !== "login"
+      ? override.encryptedCredentials
+      : override?.authType
+        ? null
+        : integration.encryptedCredentials;
   return {
     url: override?.url ? substituteIdPlaceholder(override.url, externalId) : fallbackUrl,
-    authType: override?.authType ?? integration.authType,
-    encryptedCredentials: override?.authType ? override.encryptedCredentials : integration.encryptedCredentials,
-    accessTokenEncrypted: override?.authType ? null : (integration.dataSource?.accessTokenEncrypted ?? null),
+    authType,
+    encryptedCredentials,
+    accessTokenEncrypted: authType === "login" ? (integration.dataSource?.accessTokenEncrypted ?? null) : null,
   };
 }
 
@@ -194,8 +224,17 @@ function resolveWriteRequest(
   const base = integration.baseUrl.replace(/\/$/, "");
   const override = integration.endpoints?.find((e) => e.method === method);
   const authType = override?.authType ?? integration.authType;
-  const encryptedCredentials = override?.authType ? override.encryptedCredentials : integration.encryptedCredentials;
-  const accessTokenEncrypted = override?.authType ? null : (integration.dataSource?.accessTokenEncrypted ?? null);
+  // See resolveEndpoint's identical comment — "login" never has its own
+  // static credentials, and its token always comes from the shared
+  // DataSource regardless of whether "login" came from this method's own
+  // override or the integration's shared authType.
+  const encryptedCredentials =
+    override?.authType && override.authType !== "login"
+      ? override.encryptedCredentials
+      : override?.authType
+        ? null
+        : integration.encryptedCredentials;
+  const accessTokenEncrypted = authType === "login" ? (integration.dataSource?.accessTokenEncrypted ?? null) : null;
 
   if (method === "POST") {
     return { ok: true, url: override?.url || base, authType, encryptedCredentials, accessTokenEncrypted };

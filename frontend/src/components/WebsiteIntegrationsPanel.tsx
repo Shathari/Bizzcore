@@ -16,6 +16,7 @@ import {
   type ConnectorAccessLogEntry,
 } from "../api/superAdminWebsite";
 import { updateFeatureCatalogEntry } from "../api/featureCatalog";
+import { listConnectorDataSources, type ConnectorDataSource } from "../api/connectorLogin";
 import { useToast } from "./Toast";
 import { Modal } from "./Modal";
 import { Button } from "./Button";
@@ -76,14 +77,39 @@ const HTTP_METHODS: HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
 export const AUTH_TYPE_LABELS: Record<AuthType, string> = {
   none: "None",
-  bearer: "Bearer token",
+  // Labeled "Static token" (not "Bearer token") specifically to read as the
+  // opposite of "Use site login" below — this is still a plain Bearer
+  // header under the hood, just a value the tenant pastes in by hand
+  // rather than one that comes from a live, auto-refreshing login.
+  bearer: "Static token",
   apiKey: "API key",
   basic: "Basic auth",
   customHeaders: "Custom header",
+  // Reuses whatever token this site's Data Source Access login currently
+  // holds (see ConnectorLoginPanel.tsx) — nothing to paste in, and it stays
+  // fresh automatically via that same login's auto-refresh. Only usable
+  // once a login has actually been set up for this site (see
+  // siteLoginConfigured in IntegrationEditForm below).
+  login: "Use site login",
 };
 
 export function permissionLabel(level: PermissionLevel): string {
   return level === "MANAGE" ? "Manage" : "View only";
+}
+
+// A DataSource (Data Source Access login) is shared by every feature whose
+// baseUrl resolves to the same origin (see backend's resolveDataSource) —
+// this is how "Use site login" knows a login already exists for a site
+// even before THIS feature/method has ever been saved with authType
+// "login" itself (e.g. Products already logged in, Testimonials picking up
+// the same site's login for the first time). Null on a not-yet-valid URL
+// (still being typed) rather than throwing.
+function originOf(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
 }
 
 // Conventional URL a method resolves to when no override is configured —
@@ -570,9 +596,20 @@ function deriveMethodRows(current: WebsiteIntegrationStatus | null): MethodRowSt
 // currently-selected concrete auth type, or undefined to mean "leave
 // whatever's already saved for this slot untouched" (blank-keeps-current).
 // Returns { error } instead when a required field is missing and there's
-// nothing existing to fall back to.
-function buildRowCredentials(row: MethodRowState): { credentials?: Record<string, string>; error?: string } {
+// nothing existing to fall back to. `siteLoginConfigured` gates "login" —
+// it never has credentials of its own to send, only a guard that the site
+// this row's method belongs to actually has a Data Source Access login set
+// up yet (see IntegrationEditForm's siteLoginConfigured).
+function buildRowCredentials(row: MethodRowState, siteLoginConfigured: boolean): { credentials?: Record<string, string>; error?: string } {
   const authType = row.authType as AuthType;
+  if (authType === "login") {
+    if (!siteLoginConfigured) {
+      return {
+        error: `${row.method}: This site's login isn't set up yet — set it up in "Data Source Access" below, then select "Use site login" again.`,
+      };
+    }
+    return { credentials: {} };
+  }
   if (authType === "bearer") {
     if (!row.token.trim()) return row.hadCredentials ? {} : { error: `${row.method}: token is required` };
     return { credentials: { token: row.token.trim() } };
@@ -621,7 +658,14 @@ function WebsiteIntegrationDetailModal({
       {mode === "view" && current ? (
         <IntegrationReadOnlyView current={current} api={api} featureKey={featureKey} onEdit={() => setMode("edit")} onClose={onClose} />
       ) : (
-        <IntegrationEditForm api={api} featureKey={featureKey} current={current} onCancel={() => (current?.configured ? setMode("view") : onClose())} onSaved={onSaved} />
+        <IntegrationEditForm
+          api={api}
+          featureKey={featureKey}
+          current={current}
+          onCancel={() => (current?.configured ? setMode("view") : onClose())}
+          onClose={onClose}
+          onSaved={onSaved}
+        />
       )}
     </Modal>
   );
@@ -748,9 +792,9 @@ function resolveTestInput(
 // but degrades gracefully: an incomplete/missing credential just omits
 // them (backend falls back to whatever's already saved for GET) rather
 // than blocking analysis the way a real Save would.
-function credentialsForDiscovery(row: MethodRowState): Record<string, string> | undefined {
+function credentialsForDiscovery(row: MethodRowState, siteLoginConfigured: boolean): Record<string, string> | undefined {
   if (row.authType === "default" || row.authType === "none") return undefined;
-  const built = buildRowCredentials(row);
+  const built = buildRowCredentials(row, siteLoginConfigured);
   return built.credentials && Object.keys(built.credentials).length > 0 ? built.credentials : undefined;
 }
 
@@ -759,17 +803,43 @@ function IntegrationEditForm({
   featureKey,
   current,
   onCancel,
+  onClose,
   onSaved,
 }: {
   api: WebsiteIntegrationsApi;
   featureKey: string;
   current: WebsiteIntegrationStatus | null;
   onCancel: () => void;
+  onClose: () => void;
   onSaved: () => void;
 }) {
   const { showToast } = useToast();
   const [baseUrl, setBaseUrl] = useState(current?.baseUrl ?? "");
   const [permissionLevel, setPermissionLevel] = useState<PermissionLevel>(current?.permissionLevel ?? "VIEW");
+  // Every connected site (DataSource), tenant-wide — not just this
+  // feature's — so "Use site login" is immediately available here the
+  // moment ANY feature on the same origin has a working login, exactly
+  // like the real backend resolution (resolveDataSource keys off baseUrl
+  // origin, not featureId). Fetched once; Data Source Access itself
+  // (ConnectorLoginPanel.tsx) is the only place that changes this list.
+  const [dataSources, setDataSources] = useState<ConnectorDataSource[] | null>(null);
+  useEffect(() => {
+    listConnectorDataSources()
+      .then(setDataSources)
+      .catch(() => setDataSources([]));
+  }, []);
+  const siteLoginConfigured = Boolean(dataSources?.find((ds) => ds.origin === originOf(baseUrl))?.loginConfigured);
+  // "Use site login" guidance when no login exists yet for this site —
+  // closes this modal and scrolls the underlying Settings page down to the
+  // Data Source Access card (see pages/tenant/Settings.tsx's matching
+  // id="data-source-access") rather than just leaving the tenant with a
+  // save-time error and no idea where to go fix it.
+  function goToDataSourceAccess() {
+    onClose();
+    requestAnimationFrame(() => {
+      document.getElementById("data-source-access")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
   const [rows, setRows] = useState<MethodRowState[]>(() => deriveMethodRows(current));
   const [fieldMappingRows, setFieldMappingRows] = useState<FieldMappingRow[]>(() => fieldMappingRowsFrom(current?.fieldMapping));
   const [dashboardFields, setDashboardFields] = useState<FieldDef[]>(current?.dashboardFields ?? []);
@@ -836,7 +906,7 @@ function IntegrationEditForm({
       const result = await api.discoverSchema(featureKey, {
         url,
         authType: getRow.authType === "default" ? "none" : (getRow.authType as AuthType),
-        credentials: credentialsForDiscovery(getRow),
+        credentials: credentialsForDiscovery(getRow, siteLoginConfigured),
       });
       setDiscoveredFields(result.fields);
       setPreviousDiscoveredFields(result.previousFields);
@@ -909,7 +979,7 @@ function IntegrationEditForm({
     setError(null);
 
     const getRow = rows.find((r) => r.method === "GET")!;
-    const sharedCreds = buildRowCredentials(getRow);
+    const sharedCreds = buildRowCredentials(getRow, siteLoginConfigured);
     if (sharedCreds.error) {
       setError(sharedCreds.error);
       return;
@@ -927,7 +997,7 @@ function IntegrationEditForm({
 
       let epCredentials: Record<string, string> | undefined;
       if (hasAuthOverride) {
-        const built = buildRowCredentials(row);
+        const built = buildRowCredentials(row, siteLoginConfigured);
         if (built.error) {
           setError(built.error);
           return;
@@ -1024,7 +1094,17 @@ function IntegrationEditForm({
           <code>{"{id}"}</code> where the item's id should go.
         </p>
         {rows.map((row) => (
-          <MethodRowEditor key={row.method} row={row} baseUrl={baseUrl} lookupKey={lookupKey} onChange={(patch) => updateRow(row.method, patch)} api={api} featureKey={featureKey} />
+          <MethodRowEditor
+            key={row.method}
+            row={row}
+            baseUrl={baseUrl}
+            lookupKey={lookupKey}
+            onChange={(patch) => updateRow(row.method, patch)}
+            api={api}
+            featureKey={featureKey}
+            siteLoginConfigured={siteLoginConfigured}
+            onGoToDataSourceAccess={goToDataSourceAccess}
+          />
         ))}
       </div>
 
@@ -1320,6 +1400,8 @@ function MethodRowEditor({
   onChange,
   api,
   featureKey,
+  siteLoginConfigured,
+  onGoToDataSourceAccess,
 }: {
   row: MethodRowState;
   baseUrl: string;
@@ -1327,9 +1409,17 @@ function MethodRowEditor({
   onChange: (patch: Partial<MethodRowState>) => void;
   api: WebsiteIntegrationsApi;
   featureKey: string;
+  // Whether the site this row belongs to (baseUrl's origin) already has a
+  // working Data Source Access login — gates whether "Use site login" can
+  // actually be selected here, same check the Save flow itself makes (see
+  // IntegrationEditForm's siteLoginConfigured / buildRowCredentials).
+  siteLoginConfigured: boolean;
+  onGoToDataSourceAccess: () => void;
 }) {
   const isGet = row.method === "GET";
-  const authOptions: AuthChoice[] = isGet ? ["none", "bearer", "apiKey", "basic", "customHeaders"] : ["default", "none", "bearer", "apiKey", "basic", "customHeaders"];
+  const authOptions: AuthChoice[] = isGet
+    ? ["none", "bearer", "apiKey", "basic", "customHeaders", "login"]
+    : ["default", "none", "bearer", "apiKey", "basic", "customHeaders", "login"];
   const canTest = isGet || row.method === "POST" || row.url.trim() !== "";
   const authLabel = (choice: AuthChoice) => (choice === "default" ? "Same as GET" : AUTH_TYPE_LABELS[choice as AuthType]);
 
@@ -1361,6 +1451,20 @@ function MethodRowEditor({
         />
       </div>
 
+      {row.authType === "login" &&
+        (siteLoginConfigured ? (
+          <p className="mt-2 text-xs text-neutral-500">
+            Uses this site's Data Source Access login — no token needed, and it stays fresh automatically.
+          </p>
+        ) : (
+          <p className="mt-2 text-xs text-amber-700">
+            This site has no Data Source Access login set up yet.{" "}
+            <button type="button" onClick={onGoToDataSourceAccess} className="font-semibold underline hover:no-underline">
+              Set it up
+            </button>{" "}
+            first, then come back and select this again.
+          </p>
+        ))}
       {row.authType === "bearer" && (
         <input
           type="password"

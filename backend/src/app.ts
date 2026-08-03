@@ -1,8 +1,18 @@
+// Must be the very first import in this file: it patches Express's Router
+// so that a rejected Promise from any async route handler/middleware
+// registered below (router.use/get/post/put/patch/delete) is forwarded to
+// next(err) automatically, instead of becoming an unhandled rejection that
+// crashes the whole process — this is the actual mechanism that took down
+// the server during a live Prisma transaction timeout in saveIntegration.
+// Has to run before any express.Router() is constructed, which happens as
+// soon as the route-file imports below execute, so it must stay first.
+import "express-async-errors";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
+import { logger } from "./lib/logger";
 import authRoutes from "./routes/auth";
 import passwordResetRoutes from "./routes/passwordReset";
 import customerRoutes from "./routes/customers";
@@ -17,7 +27,7 @@ import websiteContentRoutes from "./routes/websiteContent";
 import superAdminWebsiteContentRoutes from "./routes/superAdminWebsiteContent";
 import superAdminFeatureCatalogRoutes from "./routes/superAdminFeatureCatalog";
 import mockExternalSiteRoutes from "./routes/mockExternalSite";
-import publicAdminUploadsRoutes from "./routes/publicAdminUploads";
+import publicAdminUploadsRoutes, { MOCK_UPLOADS_ROOT } from "./routes/publicAdminUploads";
 import superAdminSubscriptionsRoutes from "./routes/superAdminSubscriptions";
 import superAdminPlansRoutes from "./routes/superAdminPlans";
 import subscriptionRoutes from "./routes/subscription";
@@ -29,7 +39,6 @@ import connectorConfigRoutes from "./routes/connectorConfig";
 import inquiryRoutes from "./routes/inquiries";
 import publicInquiriesRoutes from "./routes/publicInquiries";
 import customerCategoryRoutes from "./routes/customerCategories";
-import { UPLOADS_ROOT } from "./lib/upload";
 
 // Builds and configures the Express app with no side effects (no
 // app.listen, no cron scheduler) so it can be imported directly by tests
@@ -70,10 +79,17 @@ export function createApp() {
   // fine for both the GET verification handshake and POST event delivery.
   app.use("/api/webhooks/whatsapp", whatsappWebhookRoutes);
 
-  // Product images / banners — publicly readable (they're meant to appear
-  // on the tenant's storefront), namespaced under each tenant's own
-  // uploads dir.
-  app.use("/uploads", express.static(UPLOADS_ROOT));
+  // Real tenant uploads (product photos, logos, social media, etc.) are
+  // served straight from their R2 public URL now (see lib/objectStorage.ts)
+  // — a new upload's URL is never under this app's own origin at all. This
+  // mount only still serves two things: (1) routes/publicAdminUploads.ts's
+  // own local-disk mock destination site (dev/demo-only, never hit in
+  // production — see its comment), and (2) any legacy /uploads/... URL
+  // already stored in the DB from before this migration, best-effort (only
+  // reachable if it happens to still exist on whichever instance is
+  // currently running — local disk was never durable across restarts,
+  // which is the exact bug this migration fixes going forward).
+  app.use("/uploads", express.static(MOCK_UPLOADS_ROOT));
 
   app.use("/api/auth", authRoutes);
   app.use("/api/auth", passwordResetRoutes);
@@ -116,6 +132,27 @@ export function createApp() {
   // upload contract every tenant destination site now implements — see
   // routes/publicAdminUploads.ts and lib/mediaSync.ts's deriveUploadUrl.
   app.use("/api/public/admin", publicAdminUploadsRoutes);
+
+  // Last-resort safety net — every route already handles its OWN expected
+  // failures inline (res.status(4xx).json({error: "..."})), so anything
+  // that reaches here is a genuinely unexpected error (a thrown exception,
+  // a rejected Promise now forwarded here by express-async-errors above).
+  // Always responds 500 with a fixed, generic message — the real error
+  // (message + stack) goes to the log only, never to the client, since an
+  // unexpected error's own message can carry internal detail (a Prisma
+  // error, a file path, etc.) that was never meant to be public. Must be
+  // registered after every route/middleware above — Express only recognizes
+  // a 4-arg function as error-handling middleware, and only ones mounted
+  // after the route that threw are considered.
+  const errorHandler: express.ErrorRequestHandler = (err, req, res, next) => {
+    if (res.headersSent) {
+      next(err);
+      return;
+    }
+    logger.error({ err, method: req.method, url: req.originalUrl }, "unhandled request error");
+    res.status(500).json({ error: "Something went wrong. Please try again." });
+  };
+  app.use(errorHandler);
 
   return app;
 }

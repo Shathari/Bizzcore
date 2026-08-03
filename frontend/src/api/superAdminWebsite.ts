@@ -52,7 +52,12 @@ export type WebsiteContentImportFilters = {
   code?: string;
 };
 
-export type AuthType = "none" | "bearer" | "apiKey" | "basic" | "customHeaders";
+// "login" reuses this site's Data Source Access login (see
+// api/connectorLogin.ts) instead of a pasted-in static value — valid both
+// as the shared integration-level authType and as a per-method
+// EndpointStatus/EndpointInput override (backend/src/lib/
+// websiteIntegrationConfig.ts's ENDPOINT_AUTH_TYPES).
+export type AuthType = "none" | "bearer" | "apiKey" | "basic" | "customHeaders" | "login";
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export type EndpointStatus = {

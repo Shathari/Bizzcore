@@ -5,7 +5,7 @@ import { authenticate } from "../middleware/auth";
 import { resolveTenant } from "../middleware/resolveTenant";
 import { authorize } from "../middleware/authorize";
 import { requirePasswordSet } from "../middleware/requirePasswordSet";
-import { createUploader, publicUrlFor, deleteUploadedFile, handleUpload } from "../lib/upload";
+import { createMemoryUploader, saveBufferForTenant, deleteUploadedFile, handleUpload } from "../lib/upload";
 import { getTenantMetaCredentials } from "../integrations/metaCredentials";
 import { replyToInstagramComment } from "../integrations/instagram";
 import { replyToFacebookComment } from "../integrations/facebook";
@@ -16,7 +16,7 @@ router.use(authenticate, requirePasswordSet, resolveTenant, authorize("ADMIN"));
 
 const CHANNELS = ["INSTAGRAM", "FACEBOOK"] as const;
 const POST_TYPES = ["POST", "STORY", "REEL"] as const;
-const upload = createUploader("social");
+const upload = createMemoryUploader();
 
 // Page-level indicator for the "mock mode vs. live" banner — Instagram and
 // Facebook share one Meta credential, so a single check covers both.
@@ -53,7 +53,6 @@ router.post("/posts", handleUpload(upload.single("media")), async (req, res) => 
 
   const scheduledAt = new Date(d.scheduledAt);
   if (Number.isNaN(scheduledAt.getTime())) {
-    if (req.file) deleteUploadedFile(publicUrlFor(tenantId, "social", req.file.filename));
     res.status(400).json({ error: "Invalid scheduled time" });
     return;
   }
@@ -62,7 +61,6 @@ router.post("/posts", handleUpload(upload.single("media")), async (req, res) => 
   // is about how many posting slots a plan grants, not delivery outcome.
   const usage = await checkAndIncrementUsage(tenantId, "SCHEDULED_POSTS");
   if (!usage.allowed) {
-    if (req.file) deleteUploadedFile(publicUrlFor(tenantId, "social", req.file.filename));
     res.status(403).json({
       error:
         usage.reason === "not_included"
@@ -74,6 +72,11 @@ router.post("/posts", handleUpload(upload.single("media")), async (req, res) => 
     return;
   }
 
+  // Uploaded to object storage only once every earlier check has passed —
+  // no more "upload, then immediately delete it again" round trip on a
+  // validation/usage-limit failure like the old disk-storage version had.
+  const mediaUrl = req.file ? await saveBufferForTenant(tenantId, "social", req.file.originalname, req.file.buffer) : null;
+
   const post = await prisma.scheduledContent.create({
     data: {
       tenantId, // tenant-scoped
@@ -81,7 +84,7 @@ router.post("/posts", handleUpload(upload.single("media")), async (req, res) => 
       channel: d.channel,
       postType: d.postType ?? "POST",
       caption: d.caption || null,
-      mediaUrl: req.file ? publicUrlFor(tenantId, "social", req.file.filename) : null,
+      mediaUrl,
       scheduledAt,
       status: "scheduled",
     },
