@@ -23,7 +23,7 @@ const CONTENT_TYPES = [
   "Best Posting Time",
 ] as const;
 
-const TONES = ["Elegant", "Playful", "Traditional", "Bold", "Minimal"] as const;
+export const TONES = ["Elegant", "Playful", "Traditional", "Bold", "Minimal"] as const;
 
 const BASE_SYSTEM_PROMPT = `You are the in-house marketing copywriter for an Indian ethnic-wear boutique that sells sarees and related apparel through "BizzCore." Write copy that:
 - Feels warm, aspirational, and rooted in Indian textile craft and tradition, without being cliché or overusing emoji
@@ -43,7 +43,7 @@ const CONTENT_TYPE_INSTRUCTIONS: Record<(typeof CONTENT_TYPES)[number], string> 
   "Best Posting Time": "Recommend the best day(s) and time(s) to post this kind of content for an Indian ethnic-wear boutique's audience, with a one-sentence rationale. This is analysis, not promotional copy.",
 };
 
-const TONE_INSTRUCTIONS: Record<(typeof TONES)[number], string> = {
+export const TONE_INSTRUCTIONS: Record<(typeof TONES)[number], string> = {
   Elegant: "elegant and refined — polished language, understated confidence",
   Playful: "playful and fun — light, energetic, conversational",
   Traditional: "traditional and heritage-focused — emphasize craft, heritage, and timelessness",

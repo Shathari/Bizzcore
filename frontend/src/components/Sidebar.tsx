@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { Home, Users, MessageSquare, Globe, Share2, Wand2, CreditCard, Settings as SettingsIcon, CalendarCheck, X } from "lucide-react";
+import { Home, Users, MessageSquare, Globe, Share2, Wand2, Search, CreditCard, Settings as SettingsIcon, CalendarCheck, X } from "lucide-react";
 import logo from "../assets/logo.png";
 
 const NAV_ITEMS = [
@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { to: "/dashboard/website", label: "Website", icon: Globe, end: false },
   { to: "/dashboard/social-media", label: "Social Media", icon: Share2, end: false },
   { to: "/dashboard/ai-assistant", label: "AI Assistant", icon: Wand2, end: false },
+  { to: "/dashboard/content-research-lab", label: "Content Research Lab", icon: Search, end: false },
   { to: "/dashboard/subscription", label: "Subscription", icon: CreditCard, end: false },
   { to: "/dashboard/settings", label: "Settings", icon: SettingsIcon, end: false },
 ];

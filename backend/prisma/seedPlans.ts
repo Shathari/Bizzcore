@@ -34,6 +34,7 @@ const FEATURE_ROWS: FeatureRow[] = [
   { featureKey: "BLOG_GENERATION", category: "AI_MARKETING", displayName: "Blog Generation", valueType: "NUMERIC", unit: "/mo", cells: ["❌", "20", "100", "unlimited"] },
   { featureKey: "AI_IMAGE_GENERATION", category: "AI_MARKETING", displayName: "AI Image Generation", valueType: "NUMERIC", unit: "/mo", cells: ["10", "50", "200", "1000"] },
   { featureKey: "AI_VIDEO_GENERATION", category: "AI_MARKETING", displayName: "AI Video Generation", valueType: "NUMERIC", unit: "/mo", cells: ["Add-on", "10", "50", "200"] },
+  { featureKey: "CONTENT_RESEARCH", category: "AI_MARKETING", displayName: "Content Research Lab", valueType: "NUMERIC", unit: "/mo", cells: ["10", "30", "100", "unlimited"] },
 
   // --- Social Media Manager ----------------------------------------------
   { featureKey: "CONNECTED_ACCOUNTS", category: "SOCIAL_MEDIA", displayName: "Connected Accounts", valueType: "NUMERIC", unit: "accounts", cells: ["2", "5", "15", "unlimited"] },

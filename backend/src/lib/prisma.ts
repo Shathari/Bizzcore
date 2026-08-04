@@ -1,5 +1,16 @@
 import { PrismaClient } from "@prisma/client";
 
+// BigInt fields (ContentResearchLink's view/like/comment/share counts —
+// Postgres INT4 can't hold real view counts on very popular reference
+// videos) aren't JSON-serializable by default; this makes JSON.stringify /
+// Express's res.json treat them as plain numbers instead of throwing.
+// Safe: no realistic engagement count gets close to Number.MAX_SAFE_INTEGER.
+if (!("toJSON" in BigInt.prototype)) {
+  (BigInt.prototype as unknown as { toJSON: () => number }).toJSON = function (this: bigint) {
+    return Number(this);
+  };
+}
+
 // Reuse a single PrismaClient across tsx's dev-server hot reloads instead of
 // opening a fresh connection pool on every file change.
 const globalForPrisma = global as unknown as { prisma?: PrismaClient };

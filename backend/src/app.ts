@@ -21,6 +21,7 @@ import dashboardRoutes from "./routes/dashboard";
 import communicationRoutes from "./routes/communication";
 import socialRoutes from "./routes/social";
 import aiRoutes from "./routes/ai";
+import contentResearchRoutes from "./routes/contentResearch";
 import settingsRoutes from "./routes/settings";
 import superAdminWebsiteIntegrationsRoutes from "./routes/superAdminWebsiteIntegrations";
 import websiteContentRoutes from "./routes/websiteContent";
@@ -100,6 +101,7 @@ export function createApp() {
   app.use("/api/communication", communicationRoutes);
   app.use("/api/social", socialRoutes);
   app.use("/api/ai", aiRoutes);
+  app.use("/api/content-research", contentResearchRoutes);
   app.use("/api/settings", settingsRoutes);
   app.use("/api/super-admin/website-integrations", superAdminWebsiteIntegrationsRoutes);
   app.use("/api/super-admin/website-content", superAdminWebsiteContentRoutes);

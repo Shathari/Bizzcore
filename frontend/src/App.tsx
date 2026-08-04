@@ -21,6 +21,7 @@ import Communication from "./pages/tenant/Communication";
 import Website from "./pages/tenant/Website";
 import SocialMedia from "./pages/tenant/SocialMedia";
 import AIAssistant from "./pages/tenant/AIAssistant";
+import ContentResearchLab from "./pages/tenant/ContentResearchLab";
 import Subscription from "./pages/tenant/Subscription";
 import Settings from "./pages/tenant/Settings";
 import Businesses from "./pages/super-admin/Businesses";
@@ -91,6 +92,7 @@ export default function App() {
               <Route path="website" element={<Website />} />
               <Route path="social-media" element={<SocialMedia />} />
               <Route path="ai-assistant" element={<AIAssistant />} />
+              <Route path="content-research-lab" element={<ContentResearchLab />} />
               <Route path="subscription" element={<Subscription />} />
               <Route path="settings" element={<Settings />} />
             </Route>

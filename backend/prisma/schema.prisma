@@ -68,6 +68,7 @@ model Tenant {
   customers                 Customer[]
   scheduledContent          ScheduledContent[]
   aiGenerations             AIGeneration[]
+  researchReports           ContentResearchReport[]
   integrationCredentials    IntegrationCredential[]
   conversations             Conversation[]
   messages                  Message[]
@@ -120,6 +121,7 @@ model User {
   updatedAt          DateTime  @updatedAt
 
   aiGenerations       AIGeneration[]
+  researchReports     ContentResearchReport[]
   auditLogActions     AuditLog[]           @relation("AuditLogActor")
   passwordResetTokens PasswordResetToken[]
   manualGrantsGranted ManualGrant[]        @relation("ManualGrantGrantedBy")
@@ -703,15 +705,67 @@ model AIGeneration {
   tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   userId      String?
   user        User?    @relation(fields: [userId], references: [id])
-  contentType String // Instagram Caption | Facebook Post | WhatsApp Message | Festival Wish | Product Description | SEO Title | Hashtags | Ad Copy | Best Posting Time
+  contentType String // Instagram Caption | Facebook Post | WhatsApp Message | Festival Wish | Product Description | SEO Title | Hashtags | Ad Copy | Best Posting Time | Research Script
   tone        String // Elegant | Playful | Traditional | Bold | Minimal
   productName String?
   context     String?
   output      String
   createdAt   DateTime @default(now())
 
+  researchReportId   String?
+  researchReport     ContentResearchReport? @relation(fields: [researchReportId], references: [id], onDelete: SetNull)
+  selectedPatternIds String? // JSON-encoded string[] — pattern id(s) from researchReport.patterns this script was generated from
+
   @@index([tenantId])
   @@index([tenantId, createdAt])
+  @@index([researchReportId])
+}
+
+// ---------------------------------------------------------------------------
+// Content Research Lab — reference-link pattern research -> original scripts
+// ---------------------------------------------------------------------------
+
+model ContentResearchReport {
+  id           String    @id @default(cuid())
+  tenantId     String
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId       String?
+  user         User?     @relation(fields: [userId], references: [id])
+  status       String    @default("PENDING") // PENDING | FETCHING | ANALYZING | COMPLETED | FAILED
+  seedLinks    String // JSON-encoded string[] as submitted by the tenant
+  summary      String? // AI narrative summary of cross-link patterns — abstracted, never a verbatim quote from any source
+  patterns     String? // JSON-encoded [{ id, type: HOOK|FORMAT|TOPIC|STRUCTURE|CADENCE, title, description, occurrenceCount, exampleLinkIds }]
+  errorMessage String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  links       ContentResearchLink[]
+  generations AIGeneration[]
+
+  @@index([tenantId])
+  @@index([tenantId, createdAt])
+}
+
+model ContentResearchLink {
+  id              String                @id @default(cuid())
+  reportId        String
+  report          ContentResearchReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  url             String
+  platform        String // INSTAGRAM | YOUTUBE | TIKTOK
+  fetchStatus     String                @default("PENDING") // PENDING | FETCHED | FAILED
+  viewCount       BigInt? // Int (32-bit) overflows on globally popular reference videos (2B+ views)
+  likeCount       BigInt?
+  commentCount    BigInt?
+  shareCount      BigInt?
+  durationSeconds Int?
+  postedAt        DateTime?
+  hashtags        String? // JSON-encoded string[] metadata only
+  captionText     String? // stored for our own audit/re-analysis only — never passed into Stage 2 script-generation prompts
+  rawMetadata     String? // JSON-encoded full Apify item payload, so a report can be re-analyzed later without re-fetching (saves Apify cost)
+  errorMessage    String?
+  createdAt       DateTime              @default(now())
+
+  @@index([reportId])
 }
 
 // ---------------------------------------------------------------------------
