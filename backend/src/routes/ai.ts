@@ -25,22 +25,34 @@ const CONTENT_TYPES = [
 
 export const TONES = ["Elegant", "Playful", "Traditional", "Bold", "Minimal"] as const;
 
-const BASE_SYSTEM_PROMPT = `You are the in-house marketing copywriter for an Indian ethnic-wear boutique that sells sarees and related apparel through "BizzCore." Write copy that:
-- Feels warm, aspirational, and rooted in Indian textile craft and tradition, without being cliché or overusing emoji
-- Speaks directly to the boutique's customers: brides, festival shoppers, and everyday saree wearers
+// Generic on purpose — no vertical assumed (not saree, not vehicles, not
+// anything else). Was previously hardcoded to "an Indian ethnic-wear
+// boutique that sells sarees," a leftover from Kaleri Saree being the
+// original demo tenant, which meant every tenant on every vertical got
+// saree copy regardless of what they actually sell. The tenant's real
+// business name is injected per-request; the specific subject matter
+// (product, occasion, feature) comes entirely from what the person types
+// into productName/context, never from an assumption baked in here.
+function buildBaseSystemPrompt(businessName: string): string {
+  return `You are the in-house marketing copywriter for "${businessName}," a business using BizzCore to manage its marketing. Write copy that:
+- Speaks naturally and directly to ${businessName}'s own customers, in a voice that fits whatever they actually sell — take your cue entirely from the product name and context given in each request, never assume a specific industry or product category on your own
 - Is concise and ready to publish as-is — no placeholders, no meta-commentary, no explanations before or after the copy
-- Uses culturally appropriate references to fabrics (silk, cotton, chiffon, Banarasi, Kanjivaram, etc.), occasions (weddings, festivals like Diwali/Durga Puja, everyday wear), and Indian aesthetic sensibility where relevant`;
+- Stays grounded in the specific product, feature, or occasion the person describes — never substitute your own assumptions about what kind of business this is or invent details (fabric, materials, specs, etc.) that weren't given to you`;
+}
 
 const CONTENT_TYPE_INSTRUCTIONS: Record<(typeof CONTENT_TYPES)[number], string> = {
   "Instagram Caption": "Write an Instagram caption (2-4 sentences) with a natural, scroll-stopping hook. Include 3-5 relevant hashtags at the end.",
   "Facebook Post": "Write a Facebook post (3-5 sentences), slightly more descriptive than Instagram, suited to a broader audience.",
   "WhatsApp Message": "Write a short WhatsApp broadcast message (2-3 sentences), personal and direct, as if messaging a loyal customer.",
-  "Festival Wish": "Write a warm festival greeting suitable for sending to customers, tying in the boutique's offerings naturally without being overly salesy.",
-  "Product Description": "Write an e-commerce product description (3-5 sentences) highlighting fabric, craftsmanship, occasion, and styling suggestions.",
+  "Festival Wish": "Write a warm festival greeting suitable for sending to customers, tying in the business's offerings naturally without being overly salesy.",
+  "Product Description": "Write an e-commerce product description (3-5 sentences) highlighting the specific features, materials/specs, and use case actually given — never invent details that weren't provided.",
   "SEO Title": "Write a single SEO-optimized product/page title, under 60 characters, keyword-rich. Output only the title.",
   Hashtags: "Generate 15-20 relevant Instagram hashtags, mixing broad and niche tags, space-separated. Output only the hashtags.",
   "Ad Copy": "Write short paid ad copy (a headline plus a 1-2 line body) suitable for Instagram/Facebook ads, with a clear call to action.",
-  "Best Posting Time": "Recommend the best day(s) and time(s) to post this kind of content for an Indian ethnic-wear boutique's audience, with a one-sentence rationale. This is analysis, not promotional copy.",
+  // was "...for an Indian ethnic-wear boutique's audience" — the system
+  // prompt already carries the real business name, so this stays generic
+  // rather than re-hardcoding a vertical here too.
+  "Best Posting Time": "Recommend the best day(s) and time(s) to post this kind of content for this business's audience, with a one-sentence rationale. This is analysis, not promotional copy.",
 };
 
 export const TONE_INSTRUCTIONS: Record<(typeof TONES)[number], string> = {
@@ -58,10 +70,26 @@ function buildUserMessage(
   context?: string
 ): string {
   const lines = [`Content type: ${contentType}`, `Tone: ${tone} — ${TONE_INSTRUCTIONS[tone]}`];
-  if (productName) lines.push(`Product/saree name: ${productName}`);
+  // was "Product/saree name:" — generic label now that the business isn't
+  // assumed to be a saree boutique.
+  if (productName) lines.push(`Product/offer: ${productName}`);
   if (context) lines.push(`Additional context: ${context}`);
   lines.push("", CONTENT_TYPE_INSTRUCTIONS[contentType]);
   return lines.join("\n");
+}
+
+// Fetches just the business name — the one piece of tenant context every
+// prompt in this file needs. Kept as a small dedicated lookup rather than
+// assuming resolveTenant already attached a full tenant object to req,
+// since only req.tenantId is confirmed to exist elsewhere in this file.
+async function getBusinessName(tenantId: string): Promise<string> {
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { businessName: true },
+  });
+  // Generic fallback if a tenant somehow has no businessName set, rather
+  // than crashing the whole generate/refine flow over a missing field.
+  return tenant?.businessName?.trim() || "this business";
 }
 
 // Deliberately not cached at module scope: constructing an OpenAI client
@@ -102,16 +130,21 @@ const generateSchema = z.object({
 // "Refine my idea" — turns a rough, unstructured idea into 2-3 well-
 // structured content briefs the user can pick from (and still edit) before
 // ever spending a real generation. Deliberately a separate instruction set
-// from BASE_SYSTEM_PROMPT/CONTENT_TYPE_INSTRUCTIONS above: this call's job
-// is to produce BETTER INPUT (a `context` string), not publishable copy.
-const REFINE_SYSTEM_PROMPT = `You help a marketer at an Indian ethnic-wear boutique ("BizzCore") turn a rough, half-formed idea into well-structured creative briefs. You are NOT writing the final marketing copy — you are writing 2-3 alternative, richer instructions that will later be handed to a copywriter AI as its brief.
+// from buildBaseSystemPrompt/CONTENT_TYPE_INSTRUCTIONS above: this call's
+// job is to produce BETTER INPUT (a `context` string), not publishable copy.
+// Same fix as the base prompt: business name is injected per-request,
+// no vertical assumed.
+function buildRefineSystemPrompt(businessName: string): string {
+  return `You help a marketer at "${businessName}," a business using BizzCore, turn a rough, half-formed idea into well-structured creative briefs. You are NOT writing the final marketing copy — you are writing 2-3 alternative, richer instructions that will later be handed to a copywriter AI as its brief. Do not assume what kind of business this is beyond what the rough idea, product name, and content type tell you.
 
 Given the rough idea plus the content type and tone it's meant for, produce 2-3 distinct briefs. Each brief should:
 - Be 1-3 sentences, specific and concrete (occasion, angle, detail, or hook the rough idea only implied)
 - Read as an instruction/context a copywriter would use, not as a finished caption or ad
-- Genuinely differ in angle from the other options (e.g. one festival/occasion-led, one product/craft-led, one urgency/offer-led), not just reworded restatements of each other
+- Genuinely differ in angle from the other options (e.g. one occasion-led, one product/feature-led, one urgency/offer-led), not just reworded restatements of each other
+- Stay grounded in what the rough idea and product name actually say — never invent a product category, material, or industry that wasn't mentioned
 
 Respond ONLY with strict JSON of the shape {"suggestions": ["...", "...", "..."]} — no other text.`;
+}
 
 const refineSchema = z.object({
   contentType: z.enum(CONTENT_TYPES),
@@ -170,13 +203,14 @@ router.post("/generate", async (req, res) => {
   }
 
   const { contentType, tone, productName, context } = parsed.data;
+  const businessName = await getBusinessName(req.tenantId!);
 
   let output: string | undefined;
   try {
     const completion = await openai.chat.completions.create({
       model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
       messages: [
-        { role: "system", content: BASE_SYSTEM_PROMPT },
+        { role: "system", content: buildBaseSystemPrompt(businessName) },
         { role: "user", content: buildUserMessage(contentType, tone, productName, context) },
       ],
       temperature: 0.8,
@@ -241,10 +275,11 @@ router.post("/refine", async (req, res) => {
   }
 
   const { contentType, tone, productName, rawIdea } = parsed.data;
+  const businessName = await getBusinessName(req.tenantId!);
   const userMessage = [
     `Content type: ${contentType}`,
     `Tone: ${tone} — ${TONE_INSTRUCTIONS[tone]}`,
-    productName ? `Product/saree name: ${productName}` : undefined,
+    productName ? `Product/offer: ${productName}` : undefined, // was "Product/saree name:"
     `Rough idea: ${rawIdea}`,
   ]
     .filter(Boolean)
@@ -255,7 +290,7 @@ router.post("/refine", async (req, res) => {
     const completion = await openai.chat.completions.create({
       model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
       messages: [
-        { role: "system", content: REFINE_SYSTEM_PROMPT },
+        { role: "system", content: buildRefineSystemPrompt(businessName) },
         { role: "user", content: userMessage },
       ],
       temperature: 0.9,
