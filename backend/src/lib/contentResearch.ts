@@ -1,5 +1,6 @@
 import { z } from "zod";
 import OpenAI from "openai";
+import { zodResponseFormat } from "openai/helpers/zod";
 import { prisma } from "./prisma";
 import { detectPlatform, fetchLinkMetadata } from "../integrations/apify";
 
@@ -15,6 +16,17 @@ import { detectPlatform, fetchLinkMetadata } from "../integrations/apify";
 // only. The AI prompt built here (buildResearchUserMessage) reads
 // exclusively from the aggregated fields (view/like/comment/share counts,
 // hashtags, duration, postedAt) — never captionText.
+//
+// Both Stage 1 and Stage 2 now use OpenAI structured outputs
+// (zodResponseFormat + chat.completions.parse) instead of
+// response_format: { type: "json_object" } + manual JSON.parse/safeParse.
+// json_object mode only guarantees valid JSON syntax, not that it matches
+// our schema — that mismatch was the root cause of "AI returned an
+// unexpected response shape" failures. Structured outputs with strict
+// mode use model-level constrained decoding, so the model can't emit a
+// shape that violates the schema in the first place. Zod validation is
+// kept as a defensive second layer (schema-valid isn't quite the same
+// guarantee as semantically sane), but it should now rarely, if ever, fire.
 
 export function getOpenAiClient(): OpenAI | null {
   if (!process.env.OPENAI_API_KEY) return null;
@@ -22,25 +34,33 @@ export function getOpenAiClient(): OpenAI | null {
 }
 
 export function isConfigured(): boolean {
-  return Boolean(process.env.OPENAI_API_KEY) && Boolean(process.env.APIFY_API_TOKEN);
+  return (
+    Boolean(process.env.OPENAI_API_KEY) && Boolean(process.env.APIFY_API_TOKEN)
+  );
+}
+
+// swap for this project's actual logger (e.g. pino) if one exists elsewhere
+// in the codebase — kept as console.error here so this file has no new
+// dependency assumptions.
+function logAnalysisFailure(context: string, detail: Record<string, unknown>) {
+  console.error(`[contentResearch] ${context}`, detail);
 }
 
 const RESEARCH_SYSTEM_PROMPT = `You are a social media content strategist. A business is researching what content patterns tend to perform well in their niche, using a set of reference videos/posts from other creators, before creating their OWN original content inspired by (not copied from) those patterns.
 
 You are given ONLY aggregated public performance metadata for each reference item: view/like/comment/share counts, hashtags, platform, duration, and posting date. You are NEVER given and must NEVER assume, invent, or guess the actual written caption, spoken dialogue, or script of any reference item — you do not have access to that content and must not pretend otherwise.
 
-Your job is to identify RECURRING STRUCTURAL AND TOPICAL PATTERNS across the set — not to describe or rank any single item. A pattern is only meaningful if it appears across MULTIPLE items; the single highest-performing outlier alone is not a pattern.
+Your job is to identify RECURRING STRUCTURAL AND TOPICAL PATTERNS across the set — not to describe or rank any single item. A pattern is only meaningful if it appears across MULTIPLE items; the single highest-performing outlier alone is not a pattern. It is expected and correct to return an empty patterns array if the provided items genuinely don't show a confident recurring pattern — never invent a pattern just to have something to report. A short, honest result is better than a fabricated one.
 
 Patterns inferable from this kind of metadata include: video-length bands that correlate with higher engagement, posting-cadence/day-of-week signals from timestamps, hashtag/topic clusters that repeat across top performers, format signals inferable from duration + platform (e.g. short-form under 60s vs. long-form), and engagement-ratio signals (e.g. an unusually high comment-to-view ratio suggesting a discussion-provoking format).
+
+A special note on the HOOK pattern type: you have NOT seen any caption, transcript, or on-screen text, so you cannot know what any specific item's actual opening line or moment was. If you report a HOOK pattern, it must be an explicit inference from proxy signals only — for example, "short duration combined with a high early-engagement-to-view ratio across N items suggests a strong opening hook is likely present," never a claim about what any item's hook actually said or showed. Its description must read plainly as an inference, not an observation. If the metadata doesn't support even a proxy-based HOOK inference, omit HOOK entirely rather than guessing.
 
 CRITICAL RULES — follow these exactly:
 - NEVER quote, reproduce, or closely paraphrase a specific hashtag string, title, or any text from a single reference item as if it were the pattern. Describe the KIND of thing that recurs in the abstract (e.g. "short, direct-address question posed in the opening seconds"), never an actual line from any item.
 - Every pattern you report must list which reference items it was observed in (by their label, e.g. "L1", "L3") and the resulting occurrenceCount.
 - Do not report a pattern seen in only one item unless occurrenceCount is honestly 1 — do not inflate counts.
-- Base every claim strictly on the metadata provided. Do not fabricate details you weren't given.
-
-Respond ONLY with strict JSON of this exact shape, no other text:
-{"summary": "2-4 sentence overview of what the research found", "patterns": [{"type": "HOOK|FORMAT|TOPIC|STRUCTURE|CADENCE", "title": "short pattern name", "description": "what the pattern is, in the abstract — never a quoted line", "occurrenceCount": number, "exampleLinkLabels": ["L1", "L3"]}]}`;
+- Base every claim strictly on the metadata provided. Do not fabricate details you weren't given.`;
 
 type FetchedLink = {
   label: string;
@@ -59,8 +79,28 @@ type FetchedLink = {
 function buildResearchUserMessage(items: FetchedLink[]): string {
   const lines = items.map((item) => {
     // Only aggregated/structural fields — no captionText, ever.
-    const { label, platform, viewCount, likeCount, commentCount, shareCount, durationSeconds, postedAt, hashtags } = item;
-    return JSON.stringify({ label, platform, viewCount, likeCount, commentCount, shareCount, durationSeconds, postedAt: postedAt?.toISOString() ?? null, hashtags });
+    const {
+      label,
+      platform,
+      viewCount,
+      likeCount,
+      commentCount,
+      shareCount,
+      durationSeconds,
+      postedAt,
+      hashtags,
+    } = item;
+    return JSON.stringify({
+      label,
+      platform,
+      viewCount,
+      likeCount,
+      commentCount,
+      shareCount,
+      durationSeconds,
+      postedAt: postedAt?.toISOString() ?? null,
+      hashtags,
+    });
   });
   return `Reference items (one JSON object per line):\n${lines.join("\n")}`;
 }
@@ -75,9 +115,12 @@ const patternResponseSchema = z.object({
         description: z.string().trim().min(1),
         occurrenceCount: z.number().int().min(1),
         exampleLinkLabels: z.array(z.string()).min(1),
-      })
+      }),
     )
-    .min(1),
+    // was .min(1) — forcing at least one pattern pressured the model to
+    // invent one even when the items genuinely showed nothing confident,
+    // which fought the prompt's own honesty instructions. Empty is valid.
+    .min(0),
 });
 
 export type RunContentResearchParams = {
@@ -90,13 +133,23 @@ export type RunContentResearchParams = {
 // tells you whether it ended COMPLETED or FAILED) — never throws for a
 // pipeline-level failure, only for programmer errors (e.g. missing config,
 // checked by the caller beforehand via isConfigured()).
-export async function runContentResearch({ tenantId, userId, links }: RunContentResearchParams) {
+export async function runContentResearch({
+  tenantId,
+  userId,
+  links,
+}: RunContentResearchParams) {
   const openai = getOpenAiClient();
   if (!openai) throw new Error("OPENAI_API_KEY is not configured");
-  if (!process.env.APIFY_API_TOKEN) throw new Error("APIFY_API_TOKEN is not configured");
+  if (!process.env.APIFY_API_TOKEN)
+    throw new Error("APIFY_API_TOKEN is not configured");
 
   const report = await prisma.contentResearchReport.create({
-    data: { tenantId, userId, status: "FETCHING", seedLinks: JSON.stringify(links) },
+    data: {
+      tenantId,
+      userId,
+      status: "FETCHING",
+      seedLinks: JSON.stringify(links),
+    },
   });
 
   const fetchResults = await Promise.allSettled(
@@ -105,7 +158,7 @@ export async function runContentResearch({ tenantId, userId, links }: RunContent
       if (!platform) throw new Error(`Unsupported platform for URL: ${url}`);
       const { metadata } = await fetchLinkMetadata(url);
       return { url, platform, metadata };
-    })
+    }),
   );
 
   const createdLinks: FetchedLink[] = [];
@@ -152,7 +205,10 @@ export async function runContentResearch({ tenantId, userId, links }: RunContent
           url,
           platform: platform ?? "UNKNOWN",
           fetchStatus: "FAILED",
-          errorMessage: result.reason instanceof Error ? result.reason.message : String(result.reason),
+          errorMessage:
+            result.reason instanceof Error
+              ? result.reason.message
+              : String(result.reason),
         },
       });
     }
@@ -161,34 +217,83 @@ export async function runContentResearch({ tenantId, userId, links }: RunContent
   if (createdLinks.length === 0) {
     return prisma.contentResearchReport.update({
       where: { id: report.id },
-      data: { status: "FAILED", errorMessage: "None of the submitted links could be fetched." },
+      data: {
+        status: "FAILED",
+        errorMessage: "None of the submitted links could be fetched.",
+      },
       include: { links: true },
     });
   }
 
-  await prisma.contentResearchReport.update({ where: { id: report.id }, data: { status: "ANALYZING" } });
+  await prisma.contentResearchReport.update({
+    where: { id: report.id },
+    data: { status: "ANALYZING" },
+  });
 
   let patternsResult: z.infer<typeof patternResponseSchema>;
   try {
-    const completion = await openai.chat.completions.create({
+    const completion = await openai.chat.completions.parse({
       model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
       messages: [
         { role: "system", content: RESEARCH_SYSTEM_PROMPT },
         { role: "user", content: buildResearchUserMessage(createdLinks) },
       ],
       temperature: 0.4,
-      max_tokens: 1500,
-      response_format: { type: "json_object" },
+      // bumped from 1500 — strict schema mode can still run out of headroom
+      // on a large link set; that's a distinct failure mode from a shape
+      // mismatch and worth guarding against separately.
+      max_tokens: 2000,
+      response_format: zodResponseFormat(
+        patternResponseSchema,
+        "research_patterns",
+      ),
     });
-    const raw = completion.choices[0]?.message?.content;
-    const rawJson = raw ? JSON.parse(raw) : null;
-    const validated = patternResponseSchema.safeParse(rawJson);
-    if (!validated.success) throw new Error("AI returned an unexpected response shape");
+
+    const choice = completion.choices[0];
+
+    // Structured outputs can refuse instead of generating (e.g. a
+    // content-policy trip) — this shows up as `refusal`, not as a shape
+    // that fails validation. Check for it explicitly.
+    if (choice?.message?.refusal) {
+      throw new Error(
+        `AI declined to analyze this content: ${choice.message.refusal}`,
+      );
+    }
+
+    const parsed = choice?.message?.parsed;
+    if (!parsed) {
+      throw new Error(
+        `AI response could not be parsed (finish_reason: ${choice?.finish_reason ?? "unknown"})`,
+      );
+    }
+
+    // Defensive second layer — strict schema mode should make this
+    // redundant, but "schema-valid" and "semantically sane" aren't quite
+    // the same guarantee.
+    const validated = patternResponseSchema.safeParse(parsed);
+    if (!validated.success) {
+      logAnalysisFailure("Stage 1 post-validation failed", {
+        reportId: report.id,
+        issues: validated.error.issues,
+      });
+      throw new Error(
+        `AI response failed validation: ${validated.error.issues.map((i) => `${i.path.join(".")} — ${i.message}`).join("; ")}`,
+      );
+    }
+
     patternsResult = validated.data;
   } catch (err) {
+    logAnalysisFailure("Stage 1 analysis failed", {
+      reportId: report.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return prisma.contentResearchReport.update({
       where: { id: report.id },
-      data: { status: "FAILED", errorMessage: err instanceof Error ? err.message : "Pattern analysis failed" },
+      data: {
+        status: "FAILED",
+        errorMessage:
+          err instanceof Error ? err.message : "Pattern analysis failed",
+      },
       include: { links: true },
     });
   }
@@ -200,12 +305,18 @@ export async function runContentResearch({ tenantId, userId, links }: RunContent
     title: p.title,
     description: p.description,
     occurrenceCount: p.occurrenceCount,
-    exampleLinkIds: p.exampleLinkLabels.map((label) => labelToLinkId.get(label)).filter((id): id is string => Boolean(id)),
+    exampleLinkIds: p.exampleLinkLabels
+      .map((label) => labelToLinkId.get(label))
+      .filter((id): id is string => Boolean(id)),
   }));
 
   return prisma.contentResearchReport.update({
     where: { id: report.id },
-    data: { status: "COMPLETED", summary: patternsResult.summary, patterns: JSON.stringify(patterns) },
+    data: {
+      status: "COMPLETED",
+      summary: patternsResult.summary,
+      patterns: JSON.stringify(patterns),
+    },
     include: { links: { orderBy: { createdAt: "asc" } } },
   });
 }
@@ -240,10 +351,7 @@ You have been given a RESEARCH BRIEF describing patterns that recur across high-
 
 Your job is to write a genuinely ORIGINAL short-form video/content script for "${businessName}" that is INSPIRED BY the given pattern(s) — adopting the same kind of structural approach (e.g. hook style, pacing, format) described — while being entirely new content built around this business's own products, voice, and offer. The result must read as this business's own original creative work, never a reworded copy of anyone else's video.
 
-Write the script broken into clear beats (e.g. HOOK / BODY / CTA, or numbered scenes — whatever structure fits the pattern), specific and concrete enough to be immediately usable either for AI-assisted content creation or handed to a human creator to film from — no placeholders like "[product here]". Then write one matching social caption and a set of relevant hashtags in the same voice.
-
-Respond ONLY with strict JSON of this exact shape, no other text:
-{"script": "the full script, with clear scene/beat structure", "caption": "a ready-to-post social caption", "hashtags": ["#tag1", "#tag2", ...]}`;
+Write the script broken into clear beats (e.g. HOOK / BODY / CTA, or numbered scenes — whatever structure fits the pattern), specific and concrete enough to be immediately usable either for AI-assisted content creation or handed to a human creator to film from — no placeholders like "[product here]". Then write one matching social caption and a set of relevant hashtags in the same voice.`;
 }
 
 function buildScriptUserMessage(
@@ -251,7 +359,7 @@ function buildScriptUserMessage(
   tone: string,
   toneInstruction: string,
   productName?: string,
-  context?: string
+  context?: string,
 ): string {
   const lines = [
     `Tone: ${tone} — ${toneInstruction}`,
@@ -259,7 +367,10 @@ function buildScriptUserMessage(
     context ? `Additional direction from the business: ${context}` : undefined,
     "",
     "Research brief — patterns to draw structural inspiration from (abstract descriptions only, not real captions):",
-    ...patterns.map((p) => `- [${p.type}] ${p.title} (observed across ${p.occurrenceCount} reference item(s)): ${p.description}`),
+    ...patterns.map(
+      (p) =>
+        `- [${p.type}] ${p.title} (observed across ${p.occurrenceCount} reference item(s)): ${p.description}`,
+    ),
   ].filter((line): line is string => line !== undefined);
   return lines.join("\n");
 }
@@ -286,27 +397,71 @@ export type GenerateResearchScriptParams = {
 // partial-progress DB row to reconcile here (nothing is written until the
 // generation fully succeeds), so the caller (the route) can just catch and
 // respond, no report-status bookkeeping needed.
-export async function generateResearchScript(params: GenerateResearchScriptParams) {
+export async function generateResearchScript(
+  params: GenerateResearchScriptParams,
+) {
   const openai = getOpenAiClient();
   if (!openai) throw new Error("OPENAI_API_KEY is not configured");
 
-  const completion = await openai.chat.completions.create({
+  const completion = await openai.chat.completions.parse({
     model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
     messages: [
       { role: "system", content: buildScriptSystemPrompt(params.businessName) },
-      { role: "user", content: buildScriptUserMessage(params.patterns, params.tone, params.toneInstruction, params.productName, params.context) },
+      {
+        role: "user",
+        content: buildScriptUserMessage(
+          params.patterns,
+          params.tone,
+          params.toneInstruction,
+          params.productName,
+          params.context,
+        ),
+      },
     ],
     temperature: 0.8,
-    max_tokens: 1200,
-    response_format: { type: "json_object" },
+    // bumped from 1200 — same headroom reasoning as Stage 1; a full script
+    // + caption + hashtag set under strict schema mode benefits from a
+    // little more room than free-form json_object mode needed.
+    max_tokens: 1600,
+    response_format: zodResponseFormat(scriptResponseSchema, "research_script"),
   });
 
-  const raw = completion.choices[0]?.message?.content;
-  const rawJson = raw ? JSON.parse(raw) : null;
-  const validated = scriptResponseSchema.safeParse(rawJson);
-  if (!validated.success) throw new Error("AI returned an unexpected response shape");
+  const choice = completion.choices[0];
 
-  const output = [`SCRIPT:`, validated.data.script, ``, `CAPTION:`, validated.data.caption, ``, `HASHTAGS:`, validated.data.hashtags.join(" ")].join("\n");
+  if (choice?.message?.refusal) {
+    throw new Error(
+      `AI declined to generate this script: ${choice.message.refusal}`,
+    );
+  }
+
+  const parsed = choice?.message?.parsed;
+  if (!parsed) {
+    throw new Error(
+      `AI response could not be parsed (finish_reason: ${choice?.finish_reason ?? "unknown"})`,
+    );
+  }
+
+  const validated = scriptResponseSchema.safeParse(parsed);
+  if (!validated.success) {
+    logAnalysisFailure("Stage 2 post-validation failed", {
+      reportId: params.reportId,
+      issues: validated.error.issues,
+    });
+    throw new Error(
+      `AI response failed validation: ${validated.error.issues.map((i) => `${i.path.join(".")} — ${i.message}`).join("; ")}`,
+    );
+  }
+
+  const output = [
+    `SCRIPT:`,
+    validated.data.script,
+    ``,
+    `CAPTION:`,
+    validated.data.caption,
+    ``,
+    `HASHTAGS:`,
+    validated.data.hashtags.join(" "),
+  ].join("\n");
 
   return prisma.aIGeneration.create({
     data: {
