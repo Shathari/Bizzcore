@@ -7,6 +7,7 @@ import { SuperAdminShell } from "./components/SuperAdminShell";
 import { TenantShell } from "./components/TenantShell";
 import Landing from "./pages/Landing";
 import Privacy from "./pages/Privacy";
+import DataDeletion from "./pages/DataDeletion";
 import Terms from "./pages/Terms";
 import Security from "./pages/Security";
 import Status from "./pages/Status";
@@ -51,6 +52,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Landing />} />
             <Route path="/privacy" element={<Privacy />} />
+            <Route path="/data-deletion" element={<DataDeletion />} />
             <Route path="/terms" element={<Terms />} />
             <Route path="/security" element={<Security />} />
             <Route path="/status" element={<Status />} />
