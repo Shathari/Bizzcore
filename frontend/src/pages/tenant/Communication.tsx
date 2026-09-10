@@ -1,16 +1,18 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import axios from "axios";
-import { MessageCircle, Globe, Instagram, Facebook, Send, X } from "lucide-react";
+import { MessageCircle, Globe, Instagram, Facebook, Send, X, Plus } from "lucide-react";
 import {
   listConversations,
   getMessages,
   sendMessage,
+  startConversation,
   listBroadcasts,
   createBroadcast,
   cancelBroadcast,
   type ConversationSummary,
   type Message,
   type Channel,
+  type OutboundChannel,
   type Broadcast,
 } from "../../api/communication";
 import { listCustomers, type Customer, type Segment } from "../../api/customers";
@@ -26,6 +28,9 @@ const CHANNEL_META: Record<Channel, { label: string; icon: typeof MessageCircle;
   INSTAGRAM_DM: { label: "Instagram", icon: Instagram, color: "text-pink-600" },
   FACEBOOK_DM: { label: "Facebook", icon: Facebook, color: "text-blue-600" },
 };
+
+// No WEBSITE_CHAT here — see api/communication.ts's OutboundChannel comment.
+const OUTBOUND_CHANNELS: OutboundChannel[] = ["WHATSAPP", "INSTAGRAM_DM", "FACEBOOK_DM"];
 
 function formatTime(iso: string) {
   return new Date(iso).toLocaleString(undefined, {
@@ -79,6 +84,22 @@ function TabButton({
   );
 }
 
+// Shared by the reply flow and the start-new-conversation flow below — same
+// "what does this delivery result mean for the tenant" wording either way.
+function deliveryNotice(
+  delivery: { mode: "live" | "mock"; delivered: boolean; error?: string } | null,
+  channelLabel: string
+): string | null {
+  if (!delivery) return null;
+  if (delivery.mode === "mock") {
+    return `Sent in mock mode — ${channelLabel} isn't connected for this business yet. Connect it in Settings.`;
+  }
+  if (!delivery.delivered) {
+    return `Delivery failed: ${delivery.error ?? "unknown error"}`;
+  }
+  return null;
+}
+
 function Inbox() {
   const { showToast } = useToast();
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
@@ -87,6 +108,7 @@ function Inbox() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [mockNotice, setMockNotice] = useState<string | null>(null);
+  const [newConvoOpen, setNewConvoOpen] = useState(false);
 
   async function loadConversations() {
     try {
@@ -121,15 +143,7 @@ function Inbox() {
       const res = await sendMessage(selectedId, draft.trim());
       setMessages((prev) => [...(prev ?? []), res.message]);
       setDraft("");
-      if (res.delivery?.mode === "mock") {
-        setMockNotice(
-          `Sent in mock mode — ${selected ? CHANNEL_META[selected.channel].label : "this channel"} isn't connected for this business yet. Connect it in Settings.`
-        );
-      } else if (res.delivery && !res.delivery.delivered) {
-        setMockNotice(`Delivery failed: ${res.delivery.error ?? "unknown error"}`);
-      } else {
-        setMockNotice(null);
-      }
+      setMockNotice(deliveryNotice(res.delivery, selected ? CHANNEL_META[selected.channel].label : "this channel"));
       loadConversations();
     } catch {
       showToast("Could not send message.", "error");
@@ -138,9 +152,29 @@ function Inbox() {
     }
   }
 
+  // Called by NewConversationModal after it's already created the
+  // conversation + first message server-side — this just brings the new
+  // thread into view, same as clicking an existing one in the list below.
+  function handleConversationStarted(conversationId: string, delivery: { mode: "live" | "mock"; delivered: boolean; error?: string } | null, channel: Channel) {
+    setNewConvoOpen(false);
+    loadConversations();
+    setSelectedId(conversationId);
+    setMockNotice(deliveryNotice(delivery, CHANNEL_META[channel].label));
+  }
+
   return (
     <div className="mt-4 flex h-[560px] overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm">
-      <div className="w-80 shrink-0 overflow-y-auto border-r border-neutral-200">
+      <div className="flex w-80 shrink-0 flex-col overflow-hidden border-r border-neutral-200">
+        <div className="flex items-center justify-between border-b border-neutral-100 px-3 py-2.5">
+          <span className="text-xs font-medium uppercase tracking-wide text-neutral-400">Conversations</span>
+          <button
+            onClick={() => setNewConvoOpen(true)}
+            className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-maroon hover:bg-maroon/5"
+          >
+            <Plus className="h-3.5 w-3.5" /> New
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto">
         {conversations === null && <p className="p-4 text-sm text-neutral-400">Loading…</p>}
         {conversations?.length === 0 && <p className="p-4 text-sm text-neutral-400">No conversations yet.</p>}
         {conversations?.map((c) => {
@@ -167,10 +201,18 @@ function Inbox() {
             </button>
           );
         })}
+        </div>
       </div>
 
       <div className="flex flex-1 flex-col">
-        {!selected && <div className="flex flex-1 items-center justify-center text-sm text-neutral-400">Select a conversation</div>}
+        {!selected && (
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 text-sm text-neutral-400">
+            <p>Select a conversation</p>
+            <button onClick={() => setNewConvoOpen(true)} className="text-xs font-medium text-maroon hover:underline">
+              or start a new one
+            </button>
+          </div>
+        )}
         {selected && (
           <>
             <div className="flex items-center gap-2 border-b border-neutral-200 px-5 py-3">
@@ -226,7 +268,131 @@ function Inbox() {
           </>
         )}
       </div>
+
+      <NewConversationModal open={newConvoOpen} onClose={() => setNewConvoOpen(false)} onStarted={handleConversationStarted} />
     </div>
+  );
+}
+
+function NewConversationModal({
+  open,
+  onClose,
+  onStarted,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onStarted: (
+    conversationId: string,
+    delivery: { mode: "live" | "mock"; delivered: boolean; error?: string } | null,
+    channel: Channel
+  ) => void;
+}) {
+  const [channel, setChannel] = useState<OutboundChannel>("WHATSAPP");
+  const [contactHandle, setContactHandle] = useState("");
+  const [contactName, setContactName] = useState("");
+  const [body, setBody] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  function resetAndClose() {
+    setChannel("WHATSAPP");
+    setContactHandle("");
+    setContactName("");
+    setBody("");
+    setError(null);
+    onClose();
+  }
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      const res = await startConversation({
+        channel,
+        contactHandle: contactHandle.trim(),
+        contactName: contactName.trim() || undefined,
+        body: body.trim(),
+      });
+      onStarted(res.conversation.id, res.delivery, res.conversation.channel);
+      resetAndClose();
+    } catch (err) {
+      setError(
+        axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not start conversation.") : "Could not start conversation."
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={resetAndClose} title="New conversation">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-neutral-700">Channel</label>
+          <select
+            value={channel}
+            onChange={(e) => setChannel(e.target.value as OutboundChannel)}
+            className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+          >
+            {OUTBOUND_CHANNELS.map((c) => (
+              <option key={c} value={c}>
+                {CHANNEL_META[c].label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-neutral-700">
+            {channel === "WHATSAPP" ? "Phone number" : "Handle / profile ID"}
+          </label>
+          <input
+            required
+            value={contactHandle}
+            onChange={(e) => setContactHandle(e.target.value)}
+            placeholder={channel === "WHATSAPP" ? "+91 98000 00000" : "e.g. @their.handle"}
+            className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-neutral-700">Name (optional)</label>
+          <input
+            value={contactName}
+            onChange={(e) => setContactName(e.target.value)}
+            className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-neutral-700">Message</label>
+          <textarea
+            required
+            rows={3}
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            placeholder="Write the first message…"
+            className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+          />
+        </div>
+
+        {error && (
+          <p className="text-sm text-red-600" role="alert">
+            {error}
+          </p>
+        )}
+
+        <div className="flex flex-wrap justify-end gap-3">
+          <Button type="button" variant="secondary" onClick={resetAndClose}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={submitting || !contactHandle.trim() || !body.trim()}>
+            {submitting ? "Sending…" : "Send"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 

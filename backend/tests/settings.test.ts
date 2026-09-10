@@ -32,7 +32,7 @@ describe("settings: integration credentials", () => {
     await request(app)
       .put("/api/settings/integrations/whatsapp")
       .set("Cookie", cookie)
-      .send({ phoneNumberId: "phone-123", accessToken: "SUPER-SECRET-TOKEN" });
+      .send({ phoneNumberId: "phone-123", wabaId: "waba-123", accessToken: "SUPER-SECRET-TOKEN" });
 
     const record = await prisma.integrationCredential.findUnique({
       where: { tenantId_provider: { tenantId: tenant.id, provider: "WHATSAPP" } },
@@ -42,7 +42,31 @@ describe("settings: integration credentials", () => {
     expect(record!.encryptedPayload).not.toContain("phone-123");
 
     const decrypted = JSON.parse(decrypt(record!.encryptedPayload));
-    expect(decrypted).toEqual({ phoneNumberId: "phone-123", accessToken: "SUPER-SECRET-TOKEN" });
+    expect(decrypted).toEqual({ phoneNumberId: "phone-123", wabaId: "waba-123", accessToken: "SUPER-SECRET-TOKEN" });
+  });
+
+  it("requires a WhatsApp Business Account ID — Template Management calls are scoped to it, not the phone number", async () => {
+    const { admin } = await createTenantWithAdmin();
+    const cookie = await loginAs(admin.email);
+
+    const res = await request(app)
+      .put("/api/settings/integrations/whatsapp")
+      .set("Cookie", cookie)
+      .send({ phoneNumberId: "phone-789", accessToken: "some-token" });
+    expect(res.status).toBe(400);
+  });
+
+  it("returns the WABA ID back to the client — non-secret, unlike the access token", async () => {
+    const { admin } = await createTenantWithAdmin();
+    const cookie = await loginAs(admin.email);
+
+    await request(app)
+      .put("/api/settings/integrations/whatsapp")
+      .set("Cookie", cookie)
+      .send({ phoneNumberId: "phone-999", wabaId: "waba-999", accessToken: "some-token" });
+
+    const res = await request(app).get("/api/settings/integrations").set("Cookie", cookie);
+    expect(res.body.whatsapp.wabaId).toBe("waba-999");
   });
 
   it("never returns the access token back to the client", async () => {
@@ -52,7 +76,7 @@ describe("settings: integration credentials", () => {
     await request(app)
       .put("/api/settings/integrations/whatsapp")
       .set("Cookie", cookie)
-      .send({ phoneNumberId: "phone-456", accessToken: "another-secret" });
+      .send({ phoneNumberId: "phone-456", wabaId: "waba-456", accessToken: "another-secret" });
 
     const res = await request(app).get("/api/settings/integrations").set("Cookie", cookie);
     expect(res.body.whatsapp.hasAccessToken).toBe(true);
@@ -66,18 +90,23 @@ describe("settings: integration credentials", () => {
     await request(app)
       .put("/api/settings/integrations/whatsapp")
       .set("Cookie", cookie)
-      .send({ phoneNumberId: "original-phone", accessToken: "original-token" });
+      .send({ phoneNumberId: "original-phone", wabaId: "original-waba", accessToken: "original-token" });
 
+    // phoneNumberId and wabaId aren't write-only like accessToken — the
+    // real Settings form always has them pre-filled from GET, so it always
+    // resends both on every save; only accessToken is ever legitimately
+    // omitted (its field starts blank since the real value is never sent
+    // back to the client).
     await request(app)
       .put("/api/settings/integrations/whatsapp")
       .set("Cookie", cookie)
-      .send({ phoneNumberId: "updated-phone" });
+      .send({ phoneNumberId: "updated-phone", wabaId: "updated-waba" });
 
     const record = await prisma.integrationCredential.findUnique({
       where: { tenantId_provider: { tenantId: tenant.id, provider: "WHATSAPP" } },
     });
     const decrypted = JSON.parse(decrypt(record!.encryptedPayload));
-    expect(decrypted).toEqual({ phoneNumberId: "updated-phone", accessToken: "original-token" });
+    expect(decrypted).toEqual({ phoneNumberId: "updated-phone", wabaId: "updated-waba", accessToken: "original-token" });
   });
 
   it("removes the credential on disconnect", async () => {

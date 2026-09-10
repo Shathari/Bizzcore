@@ -23,6 +23,7 @@ import socialRoutes from "./routes/social";
 import aiRoutes from "./routes/ai";
 import contentResearchRoutes from "./routes/contentResearch";
 import settingsRoutes from "./routes/settings";
+import whatsappTemplatesRoutes from "./routes/whatsappTemplates";
 import superAdminWebsiteIntegrationsRoutes from "./routes/superAdminWebsiteIntegrations";
 import websiteContentRoutes from "./routes/websiteContent";
 import superAdminWebsiteContentRoutes from "./routes/superAdminWebsiteContent";
@@ -64,6 +65,13 @@ export function createApp() {
   // Razorpay calls this server-to-server with no session/JWT of its own.
   app.use("/api/webhooks/razorpay", express.raw({ type: "application/json" }), razorpayWebhookRoutes);
 
+  // Meta's WhatsApp Cloud API webhook — same reasoning as Razorpay above:
+  // X-Hub-Signature-256 is an HMAC over the exact raw request bytes, so
+  // this has to run before express.json() too (see webhooks/whatsapp.ts).
+  // The GET verification handshake has no body, so express.raw() here is a
+  // no-op for it.
+  app.use("/api/webhooks/whatsapp", express.raw({ type: "application/json" }), whatsappWebhookRoutes);
+
   app.use(express.json());
   app.use(cookieParser());
   if (process.env.NODE_ENV !== "test") {
@@ -73,12 +81,6 @@ export function createApp() {
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok" });
   });
-
-  // Meta's WhatsApp Cloud API webhook — no signature verification yet (see
-  // that file's comment), so unlike the Razorpay webhook above this doesn't
-  // need to be mounted before express.json(); normal parsed JSON body is
-  // fine for both the GET verification handshake and POST event delivery.
-  app.use("/api/webhooks/whatsapp", whatsappWebhookRoutes);
 
   // Real tenant uploads (product photos, logos, social media, etc.) are
   // served straight from their R2 public URL now (see lib/objectStorage.ts)
@@ -103,6 +105,7 @@ export function createApp() {
   app.use("/api/ai", aiRoutes);
   app.use("/api/content-research", contentResearchRoutes);
   app.use("/api/settings", settingsRoutes);
+  app.use("/api/whatsapp/templates", whatsappTemplatesRoutes);
   app.use("/api/super-admin/website-integrations", superAdminWebsiteIntegrationsRoutes);
   app.use("/api/super-admin/website-content", superAdminWebsiteContentRoutes);
   app.use("/api/super-admin/feature-catalog", superAdminFeatureCatalogRoutes);

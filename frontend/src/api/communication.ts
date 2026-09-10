@@ -44,6 +44,29 @@ export async function sendMessage(
   return data;
 }
 
+// WEBSITE_CHAT is excluded — there's no live customer-facing chat widget in
+// this build, so there's no real recipient a "new" website-chat thread
+// could ever reach (matches OUTBOUND_CHANNELS in routes/communication.ts).
+export type OutboundChannel = Exclude<Channel, "WEBSITE_CHAT">;
+
+export type NewConversation = {
+  id: string;
+  channel: Channel;
+  contactName: string | null;
+  contactHandle: string | null;
+  lastMessageAt: string;
+};
+
+export async function startConversation(input: {
+  channel: OutboundChannel;
+  contactHandle: string;
+  contactName?: string;
+  body: string;
+}): Promise<{ conversation: NewConversation; message: Message; delivery: DeliveryResult }> {
+  const { data } = await apiClient.post("/communication/conversations", input);
+  return data;
+}
+
 export type Broadcast = {
   id: string;
   caption: string | null;

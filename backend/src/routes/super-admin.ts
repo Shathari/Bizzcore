@@ -57,10 +57,12 @@ async function deliverCredentials(
 
   let whatsappResult: WhatsAppResult | null = null;
   if (user.phone) {
-    whatsappResult = await sendPlatformWhatsAppMessage(
-      user.phone,
-      `BizzCore: your login for ${tenant.businessName} is ready. Email: ${user.email}  Temp password: ${tempPassword}  Login: ${APP_LOGIN_URL}`
-    );
+    whatsappResult = await sendPlatformWhatsAppMessage(user.phone, {
+      businessName: tenant.businessName,
+      email: user.email,
+      tempPassword,
+      loginUrl: APP_LOGIN_URL,
+    });
   }
 
   const allDelivered = emailResult.delivered && (whatsappResult === null || whatsappResult.delivered);

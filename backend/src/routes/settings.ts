@@ -15,7 +15,7 @@ const router = Router();
 router.use(authenticate, requirePasswordSet, resolveTenant, authorize("ADMIN"));
 
 type MetaPayload = { appId?: string; pageId?: string; igBusinessAccountId?: string; accessToken: string };
-type WhatsAppPayload = { phoneNumberId: string; accessToken: string };
+type WhatsAppPayload = { phoneNumberId: string; wabaId: string; accessToken: string };
 
 function readPayload<T>(encryptedPayload: string): T | null {
   try {
@@ -50,6 +50,7 @@ router.get("/integrations", async (req, res) => {
     whatsapp: {
       connected: Boolean(whatsapp?.accessToken),
       phoneNumberId: whatsapp?.phoneNumberId ?? null,
+      wabaId: whatsapp?.wabaId ?? null,
       hasAccessToken: Boolean(whatsapp?.accessToken),
       updatedAt: whatsappRecord?.updatedAt ?? null,
     },
@@ -114,6 +115,13 @@ router.delete("/integrations/meta", async (req, res) => {
 
 const whatsappSchema = z.object({
   phoneNumberId: z.string().trim().min(1, "Phone Number ID is required"),
+  // Required going forward (not just carried over like accessToken below) —
+  // WABA ID is how Meta's Template Management API is scoped
+  // (/{WABA_ID}/message_templates — see routes/whatsappTemplates.ts), so a
+  // connection saved without one can send messages but can't manage
+  // templates. Visible on the same Meta for Developers > WhatsApp > API
+  // Setup page as the Phone Number ID, right above it.
+  wabaId: z.string().trim().min(1, "WhatsApp Business Account ID is required"),
   accessToken: z.string().trim().optional(),
 });
 
@@ -135,12 +143,22 @@ router.put("/integrations/whatsapp", async (req, res) => {
     return;
   }
 
-  const payload: WhatsAppPayload = { phoneNumberId: parsed.data.phoneNumberId, accessToken };
+  const payload: WhatsAppPayload = { phoneNumberId: parsed.data.phoneNumberId, wabaId: parsed.data.wabaId, accessToken };
 
+  // externalId/wabaId mirror payload.phoneNumberId/wabaId in the clear —
+  // see schema.prisma's comments on IntegrationCredential.externalId and
+  // .wabaId for why: routing (webhook) and template management both need
+  // to query by these without decrypting every row.
   await prisma.integrationCredential.upsert({
     where: { tenantId_provider: { tenantId, provider: "WHATSAPP" } }, // tenant-scoped
-    create: { tenantId, provider: "WHATSAPP", encryptedPayload: encrypt(JSON.stringify(payload)) },
-    update: { encryptedPayload: encrypt(JSON.stringify(payload)) },
+    create: {
+      tenantId,
+      provider: "WHATSAPP",
+      encryptedPayload: encrypt(JSON.stringify(payload)),
+      externalId: payload.phoneNumberId,
+      wabaId: payload.wabaId,
+    },
+    update: { encryptedPayload: encrypt(JSON.stringify(payload)), externalId: payload.phoneNumberId, wabaId: payload.wabaId },
   });
 
   res.json({ ok: true });

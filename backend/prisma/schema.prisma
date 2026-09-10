@@ -264,6 +264,13 @@ model Conversation {
 
   @@index([tenantId])
   @@index([tenantId, channel])
+  // One conversation per contact per channel per tenant — lets the webhook
+  // upsert an inbound-message conversation instead of racing two concurrent
+  // deliveries into two rows for the same contact. NULL contactHandle
+  // (WEBSITE_CHAT, which has no stable per-contact identifier) is exempt:
+  // Postgres treats every NULL as distinct under a unique index, so
+  // multiple WEBSITE_CHAT conversations per tenant remain unaffected.
+  @@unique([tenantId, channel, contactHandle])
 }
 
 model Message {
@@ -276,9 +283,24 @@ model Message {
   body           String
   status         String       @default("sent") // sent | delivered | read | failed
   sentAt         DateTime     @default(now())
+  // Meta's WAMID ("wamid.xxx") — set on OUTBOUND rows from the Cloud API's
+  // send response, and on INBOUND rows from the webhook's messages[].id.
+  // Two jobs: (1) status-update webhooks (statuses[].id) key off this to
+  // find which Message to move to delivered/read/failed; (2) inbound
+  // message webhooks check it before creating a row, since Meta retries
+  // webhook delivery on a non-2xx and may redeliver an event we already
+  // processed. Null for pre-webhook rows and any mock-mode send (no real
+  // WAMID exists yet). Not unique: a null value must never collide, and
+  // Postgres already allows unlimited NULLs under a unique index anyway —
+  // enforcing "no duplicate real WAMID" is done as an explicit check in the
+  // webhook handler instead, matching the existing
+  // find-before-create precedent (see webhooks/razorpay.ts's
+  // existingPayment check) rather than relying on a DB constraint here.
+  externalId     String?
 
   @@index([tenantId])
   @@index([conversationId])
+  @@index([tenantId, externalId])
 }
 
 // Leads/inquiries captured from website chat, WhatsApp, or Instagram — backs
@@ -778,11 +800,33 @@ model IntegrationCredential {
   tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   provider         String // META | WHATSAPP
   encryptedPayload String // AES-256-GCM encrypted JSON blob (appId, token, businessAccountId, ...)
+  // Non-secret identifier duplicated out of the encrypted payload so it can
+  // actually be queried — for provider WHATSAPP this is the Cloud API
+  // phone_number_id. The webhook receiver gets a phone_number_id from Meta
+  // on every event and has to find which tenant owns it; the payload above
+  // is opaque ciphertext (by design — see crypto.ts), so that lookup would
+  // otherwise mean decrypting every WhatsApp-connected tenant's row on
+  // every incoming event. A phone_number_id is an identifier, not a secret
+  // (it's visible in Meta's dashboard URLs and API responses), so storing
+  // it in the clear here carries the same risk profile as
+  // Payment.razorpayOrderId — safe to query by, nothing to protect. Null
+  // for providers/rows that don't need reverse lookup (currently just
+  // META, which has no inbound webhook to route).
+  externalId       String?
+  // WhatsApp Business Account ID — also non-secret (same reasoning as
+  // externalId above), but a distinct identifier serving a distinct
+  // purpose: Meta's Template Management API is scoped to a WABA
+  // (/{WABA_ID}/message_templates), not a phone_number_id, so template
+  // list/create calls need this specifically. Kept as its own named field
+  // rather than folded into externalId so each identifier's one job stays
+  // obvious at the call site. Only meaningful for provider WHATSAPP.
+  wabaId           String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
   @@unique([tenantId, provider])
   @@index([tenantId])
+  @@index([provider, externalId])
 }
 
 // ---------------------------------------------------------------------------

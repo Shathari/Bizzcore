@@ -29,6 +29,8 @@ describe("integrations: mock-first adapters", () => {
     fetchSpy.mockRestore();
     delete process.env.WHATSAPP_PLATFORM_PHONE_NUMBER_ID;
     delete process.env.WHATSAPP_PLATFORM_ACCESS_TOKEN;
+    delete process.env.WHATSAPP_PLATFORM_TEMPLATE_NAME;
+    delete process.env.WHATSAPP_PLATFORM_TEMPLATE_LANGUAGE;
   });
 
   it("whatsapp: runs in mock mode when no tenant credential exists", async () => {
@@ -106,8 +108,15 @@ describe("integrations: mock-first adapters", () => {
     expect(JSON.parse(init.body as string)).toEqual({ message: "Text-only update" });
   });
 
+  const credentialMessage = {
+    businessName: "Kaleri Sarees",
+    email: "owner@kaleri.example",
+    tempPassword: "TempPass123!",
+    loginUrl: "http://localhost:5173/login",
+  };
+
   it("whatsapp (platform): runs in mock mode when WHATSAPP_PLATFORM_* isn't configured", async () => {
-    const result = await sendPlatformWhatsAppMessage("+919800000070", "hi");
+    const result = await sendPlatformWhatsAppMessage("+919800000070", credentialMessage);
     expect(result).toEqual({ delivered: false, mode: "mock" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -117,10 +126,59 @@ describe("integrations: mock-first adapters", () => {
     process.env.WHATSAPP_PLATFORM_ACCESS_TOKEN = "platform-token";
     fetchSpy.mockResolvedValue({ ok: true, text: async () => "" } as Response);
 
-    const result = await sendPlatformWhatsAppMessage("+919800000071", "your BizzCore login is ready");
+    const result = await sendPlatformWhatsAppMessage("+919800000071", credentialMessage);
     expect(result).toEqual({ delivered: true, mode: "live" });
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("platform-phone-1/messages");
     expect(init.headers).toMatchObject({ Authorization: "Bearer platform-token" });
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      type: "text",
+      text: { body: "BizzCore: your login for Kaleri Sarees is ready. Email: owner@kaleri.example  Temp password: TempPass123!  Login: http://localhost:5173/login" },
+    });
+  });
+
+  it("whatsapp (platform): keeps sending freeform text when only one of the two template env vars is set", async () => {
+    process.env.WHATSAPP_PLATFORM_PHONE_NUMBER_ID = "platform-phone-2";
+    process.env.WHATSAPP_PLATFORM_ACCESS_TOKEN = "platform-token-2";
+    process.env.WHATSAPP_PLATFORM_TEMPLATE_NAME = "bizzcore_account_credentials";
+    // _LANGUAGE deliberately left unset — half-configured shouldn't flip
+    // the mode; it should behave identically to neither being set.
+    fetchSpy.mockResolvedValue({ ok: true, text: async () => "" } as Response);
+
+    await sendPlatformWhatsAppMessage("+919800000072", credentialMessage);
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toMatchObject({ type: "text" });
+  });
+
+  it("whatsapp (platform): sends as an approved template with businessName/email/tempPassword/loginUrl as {{1}}..{{4}}, once both template env vars are set", async () => {
+    process.env.WHATSAPP_PLATFORM_PHONE_NUMBER_ID = "platform-phone-3";
+    process.env.WHATSAPP_PLATFORM_ACCESS_TOKEN = "platform-token-3";
+    process.env.WHATSAPP_PLATFORM_TEMPLATE_NAME = "bizzcore_account_credentials";
+    process.env.WHATSAPP_PLATFORM_TEMPLATE_LANGUAGE = "en_US";
+    fetchSpy.mockResolvedValue({ ok: true, text: async () => "" } as Response);
+
+    await sendPlatformWhatsAppMessage("+919800000073", credentialMessage);
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("platform-phone-3/messages");
+    expect(JSON.parse(init.body as string)).toEqual({
+      messaging_product: "whatsapp",
+      to: "+919800000073",
+      type: "template",
+      template: {
+        name: "bizzcore_account_credentials",
+        language: { code: "en_US" },
+        components: [
+          {
+            type: "body",
+            parameters: [
+              { type: "text", text: "Kaleri Sarees" },
+              { type: "text", text: "owner@kaleri.example" },
+              { type: "text", text: "TempPass123!" },
+              { type: "text", text: "http://localhost:5173/login" },
+            ],
+          },
+        ],
+      },
+    });
   });
 });

@@ -12,6 +12,7 @@ export type MetaStatus = {
 export type WhatsAppStatus = {
   connected: boolean;
   phoneNumberId: string | null;
+  wabaId: string | null;
   hasAccessToken: boolean;
   updatedAt: string | null;
 };
@@ -34,7 +35,11 @@ export async function disconnectMeta(): Promise<void> {
   await apiClient.delete("/settings/integrations/meta");
 }
 
-export async function saveWhatsAppCredentials(input: { phoneNumberId: string; accessToken?: string }): Promise<void> {
+export async function saveWhatsAppCredentials(input: {
+  phoneNumberId: string;
+  wabaId: string;
+  accessToken?: string;
+}): Promise<void> {
   await apiClient.put("/settings/integrations/whatsapp", input);
 }
 

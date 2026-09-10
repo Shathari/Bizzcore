@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import axios from "axios";
-import { CheckCircle2, Globe2, XCircle, Tag, Star, Trash2, Pencil, Check, X } from "lucide-react";
+import { CheckCircle2, Globe2, XCircle, Tag, Star, Trash2, Pencil, Check, X, MessageSquareText } from "lucide-react";
 import {
   getIntegrations,
   saveMetaCredentials,
@@ -10,6 +10,7 @@ import {
   type MetaStatus,
   type WhatsAppStatus,
 } from "../../api/settings";
+import { listWhatsAppTemplates, createWhatsAppTemplate, type TemplatesStatus } from "../../api/whatsappTemplates";
 import { listActiveModules, importWebsiteContentItems, syncWebsiteContentItems } from "../../api/websiteContent";
 import { connectorConfigApi } from "../../api/connectorConfig";
 import {
@@ -22,6 +23,7 @@ import {
 import { useToast } from "../../components/Toast";
 import { Card } from "../../components/Card";
 import { Button } from "../../components/Button";
+import { Modal } from "../../components/Modal";
 import { WebsiteModulesPanel } from "../../components/WebsiteModulesPanel";
 import { WebsiteIntegrationsPanel } from "../../components/WebsiteIntegrationsPanel";
 import { ConnectorLoginPanel } from "../../components/ConnectorLoginPanel";
@@ -68,6 +70,10 @@ export default function Settings() {
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
         <MetaSettingsCard status={meta} onChanged={load} />
         <WhatsAppSettingsCard status={whatsapp} onChanged={load} />
+      </div>
+
+      <div className="mt-6">
+        <WhatsAppTemplatesCard whatsappStatus={whatsapp} />
       </div>
 
       <div className="mt-6">
@@ -234,6 +240,7 @@ function MetaSettingsCard({ status, onChanged }: { status: MetaStatus | null; on
 function WhatsAppSettingsCard({ status, onChanged }: { status: WhatsAppStatus | null; onChanged: () => void }) {
   const { showToast } = useToast();
   const [phoneNumberId, setPhoneNumberId] = useState("");
+  const [wabaId, setWabaId] = useState("");
   const [accessToken, setAccessToken] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -242,6 +249,7 @@ function WhatsAppSettingsCard({ status, onChanged }: { status: WhatsAppStatus | 
   useEffect(() => {
     if (!status) return;
     setPhoneNumberId(status.phoneNumberId ?? "");
+    setWabaId(status.wabaId ?? "");
   }, [status]);
 
   async function handleSubmit(e: FormEvent) {
@@ -249,7 +257,7 @@ function WhatsAppSettingsCard({ status, onChanged }: { status: WhatsAppStatus | 
     setError(null);
     setSaving(true);
     try {
-      await saveWhatsAppCredentials({ phoneNumberId, accessToken: accessToken || undefined });
+      await saveWhatsAppCredentials({ phoneNumberId, wabaId, accessToken: accessToken || undefined });
       setAccessToken("");
       showToast("WhatsApp credentials saved");
       onChanged();
@@ -265,6 +273,7 @@ function WhatsAppSettingsCard({ status, onChanged }: { status: WhatsAppStatus | 
     try {
       await disconnectWhatsApp();
       setPhoneNumberId("");
+      setWabaId("");
       setAccessToken("");
       showToast("WhatsApp disconnected");
       onChanged();
@@ -285,6 +294,13 @@ function WhatsAppSettingsCard({ status, onChanged }: { status: WhatsAppStatus | 
 
       <form onSubmit={handleSubmit} className="mt-4 space-y-4">
         <Field label="Phone Number ID *" value={phoneNumberId} onChange={setPhoneNumberId} required />
+        <div>
+          <Field label="WhatsApp Business Account ID *" value={wabaId} onChange={setWabaId} required />
+          <p className="mt-1 text-xs text-neutral-400">
+            From the same Meta for Developers &rarr; WhatsApp &rarr; API Setup page as your Phone Number ID. Needed to
+            manage message templates below.
+          </p>
+        </div>
         <div>
           <label className="block text-sm font-medium text-neutral-700">Access token</label>
           <input
@@ -314,6 +330,202 @@ function WhatsAppSettingsCard({ status, onChanged }: { status: WhatsAppStatus | 
         </div>
       </form>
     </Card>
+  );
+}
+
+const TEMPLATE_CATEGORY_OPTIONS = ["MARKETING", "UTILITY", "AUTHENTICATION"] as const;
+
+const TEMPLATE_STATUS_STYLES: Record<string, string> = {
+  APPROVED: "bg-emerald-100 text-emerald-700",
+  PENDING: "bg-amber-100 text-amber-700",
+  REJECTED: "bg-red-100 text-red-700",
+};
+
+// WhatsApp Message Templates — Meta's Template Management API
+// (whatsapp_business_management), scoped to the tenant's own WABA (see the
+// WhatsApp card above). A thin pass-through to Meta: this list is always
+// fetched live, never cached locally, so status shown here is always
+// Meta's current truth, not a stale local copy.
+function WhatsAppTemplatesCard({ whatsappStatus }: { whatsappStatus: WhatsAppStatus | null }) {
+  const { showToast } = useToast();
+  const [status, setStatus] = useState<TemplatesStatus | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+
+  async function load() {
+    try {
+      setStatus(await listWhatsAppTemplates());
+    } catch {
+      showToast("Could not load WhatsApp templates.", "error");
+    }
+  }
+
+  useEffect(() => {
+    // Only worth asking once WhatsApp is actually connected — avoids a
+    // guaranteed-empty round trip on first load for a tenant who hasn't
+    // set anything up yet.
+    if (whatsappStatus?.connected) load();
+  }, [whatsappStatus?.connected]);
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <MessageSquareText className="h-4 w-4 text-neutral-400" />
+          <h2 className="font-serif text-lg text-neutral-900">WhatsApp Templates</h2>
+        </div>
+        {status?.wabaConfigured && <Button onClick={() => setModalOpen(true)}>+ New Template</Button>}
+      </div>
+      <p className="mt-1 text-sm text-neutral-500">
+        Pre-approved WhatsApp messages you can send to a customer even outside the normal 24-hour reply window.
+      </p>
+
+      <div className="mt-4">
+        {!whatsappStatus?.connected && <p className="text-sm text-neutral-400">Connect WhatsApp above to manage templates.</p>}
+        {whatsappStatus?.connected && status && !status.wabaConfigured && (
+          <p className="text-sm text-amber-600">Add your WhatsApp Business Account ID above to manage templates.</p>
+        )}
+        {status?.wabaConfigured && status.templates.length === 0 && <p className="text-sm text-neutral-400">No templates yet.</p>}
+        {status?.wabaConfigured && status.templates.length > 0 && (
+          <ul className="divide-y divide-neutral-100">
+            {status.templates.map((t) => (
+              <li key={t.id} className="flex items-center justify-between py-2.5">
+                <div>
+                  <p className="text-sm font-medium text-neutral-900">{t.name}</p>
+                  <p className="text-xs text-neutral-400">
+                    {t.category} · {t.language}
+                  </p>
+                </div>
+                <span
+                  className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                    TEMPLATE_STATUS_STYLES[t.status] ?? "bg-neutral-100 text-neutral-700"
+                  }`}
+                >
+                  {t.status}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <NewTemplateModal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onCreated={() => {
+          setModalOpen(false);
+          load();
+        }}
+      />
+    </Card>
+  );
+}
+
+function NewTemplateModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
+  const [name, setName] = useState("");
+  const [category, setCategory] = useState<(typeof TEMPLATE_CATEGORY_OPTIONS)[number]>("UTILITY");
+  const [language, setLanguage] = useState("en_US");
+  const [bodyText, setBodyText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  function resetAndClose() {
+    setName("");
+    setCategory("UTILITY");
+    setLanguage("en_US");
+    setBodyText("");
+    setError(null);
+    onClose();
+  }
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      await createWhatsAppTemplate({ name: name.trim(), category, language: language.trim(), bodyText: bodyText.trim() });
+      resetAndClose();
+      onCreated();
+    } catch (err) {
+      setError(
+        axios.isAxiosError(err) ? (err.response?.data?.error ?? "Could not create template.") : "Could not create template."
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={resetAndClose} title="New WhatsApp Template">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-neutral-700">Name</label>
+          <input
+            required
+            value={name}
+            onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_"))}
+            placeholder="order_confirmation"
+            className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+          />
+          <p className="mt-1 text-xs text-neutral-400">Lowercase letters, numbers, and underscores only (Meta's rule).</p>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-neutral-700">Category</label>
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value as (typeof TEMPLATE_CATEGORY_OPTIONS)[number])}
+            className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+          >
+            {TEMPLATE_CATEGORY_OPTIONS.map((c) => (
+              <option key={c} value={c}>
+                {c[0] + c.slice(1).toLowerCase()}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-neutral-700">Language code</label>
+          <input
+            required
+            value={language}
+            onChange={(e) => setLanguage(e.target.value)}
+            placeholder="en_US"
+            className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-neutral-700">Body text</label>
+          <textarea
+            required
+            rows={4}
+            value={bodyText}
+            onChange={(e) => setBodyText(e.target.value)}
+            placeholder={"Hi {{1}}, your order {{2}} has shipped!"}
+            className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+          />
+          <p className="mt-1 text-xs text-neutral-400">
+            Use {"{{1}}"}, {"{{2}}"}, … for variables filled in at send time.
+          </p>
+        </div>
+
+        {error && (
+          <p className="text-sm text-red-600" role="alert">
+            {error}
+          </p>
+        )}
+
+        <div className="flex flex-wrap justify-end gap-3">
+          <Button type="button" variant="secondary" onClick={resetAndClose}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={submitting}>
+            {submitting ? "Submitting…" : "Submit for approval"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
