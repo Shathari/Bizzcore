@@ -173,6 +173,29 @@ export async function sendWhatsAppMessage(tenantId: string, to: string, body: st
   return callWhatsAppApi(creds, to, { type: "text", body });
 }
 
+// Tenant-facing template send — used by jobs/scheduler.ts for a template-mode
+// WHATSAPP_BROADCAST, one call per recipient with that recipient's own
+// resolved bodyParams (see lib/whatsappPlaceholders.ts's resolvePlaceholders).
+// Generalizes the bodyParams support sendPlatformWhatsAppMessage below
+// already has, but against the tenant's own WhatsApp number/credentials
+// instead of BizzCore's platform one.
+export async function sendWhatsAppTemplateMessage(
+  tenantId: string,
+  to: string,
+  templateName: string,
+  templateLanguage: string,
+  bodyParams?: string[]
+): Promise<WhatsAppResult> {
+  const creds = await getTenantWhatsAppCredentials(tenantId);
+  if (!creds) {
+    console.log(
+      `[whatsapp:mock] Would send WhatsApp template "${templateName}" to ${to} (no WhatsApp credentials configured for this tenant)`
+    );
+    return { delivered: false, mode: "mock" };
+  }
+  return callWhatsAppApi(creds, to, { type: "template", name: templateName, language: templateLanguage, bodyParams });
+}
+
 function getPlatformCredentials(): WhatsAppCredentials | null {
   const phoneNumberId = process.env.WHATSAPP_PLATFORM_PHONE_NUMBER_ID;
   const accessToken = process.env.WHATSAPP_PLATFORM_ACCESS_TOKEN;

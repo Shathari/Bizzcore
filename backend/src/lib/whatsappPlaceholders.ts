@@ -72,7 +72,8 @@ export type PlaceholderMapping =
 // formatCurrency/formatDate), so a broadcast reads consistently with the
 // dashboard. Returns null for a missing value (null/undefined date, or 0
 // totalSpent is a real value, not "missing") — callers decide the fallback
-// (see resolveCustomerFieldValue's doc in jobs/scheduler.ts).
+// (see resolvePlaceholders below, which fails the whole recipient rather
+// than sending a blank slot).
 export function formatCustomerFieldValue(field: CustomerField, raw: string | number | Date | null): string | null {
   if (raw === null || raw === undefined) return null;
   switch (field) {
@@ -87,4 +88,63 @@ export function formatCustomerFieldValue(field: CustomerField, raw: string | num
     case "segment":
       return String(raw);
   }
+}
+
+// --- Dispatch-time resolution ---------------------------------------------
+//
+// jobs/scheduler.ts's shape for one recipient — a subset of the Customer
+// model plus the recipient's already-decrypted phone (dispatch decrypts
+// phone once per recipient regardless, for the `to` address; resolving a
+// "Phone" placeholder reuses that same value rather than decrypting again).
+export type PlaceholderRecipient = {
+  name: string;
+  segment: string;
+  totalSpent: number;
+  lastPurchase: Date | null;
+  decryptedPhone: string;
+};
+
+function rawCustomerFieldValue(field: CustomerField, recipient: PlaceholderRecipient): string | number | Date | null {
+  switch (field) {
+    case "name":
+      return recipient.name;
+    case "phone":
+      return recipient.decryptedPhone;
+    case "segment":
+      return recipient.segment;
+    case "totalSpent":
+      return recipient.totalSpent;
+    case "lastPurchase":
+      return recipient.lastPurchase;
+  }
+}
+
+// Resolves one recipient's full ordered bodyParams array from a broadcast's
+// placeholderConfig — STATIC entries use their fixed text, CUSTOMER_FIELD
+// entries pull and format that recipient's own value. Fails closed: any
+// missing CUSTOMER_FIELD value (e.g. no lastPurchase on file) fails the
+// whole recipient rather than sending a message with a blank/garbled slot —
+// per the "skip + log, never fabricate" decision, the caller (dispatch) is
+// expected to skip this recipient and log `missingField` as the reason, not
+// retry with a placeholder default.
+export function resolvePlaceholders(
+  placeholders: PlaceholderMapping[],
+  recipient: PlaceholderRecipient
+): { ok: true; params: string[] } | { ok: false; missingField: CustomerField } {
+  const params: string[] = [];
+  // Sorted by index, not array order — placeholderConfig is validated at
+  // broadcast-creation time to cover 1..N exactly once, but doesn't
+  // guarantee it was stored in that order.
+  for (const p of [...placeholders].sort((a, b) => a.index - b.index)) {
+    if (p.mode === "STATIC") {
+      params.push(p.value);
+      continue;
+    }
+    const formatted = formatCustomerFieldValue(p.field, rawCustomerFieldValue(p.field, recipient));
+    if (formatted === null) {
+      return { ok: false, missingField: p.field };
+    }
+    params.push(formatted);
+  }
+  return { ok: true, params };
 }

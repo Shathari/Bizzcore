@@ -1,11 +1,12 @@
 import cron from "node-cron";
 import { prisma } from "../lib/prisma";
-import { sendWhatsAppMessage } from "../integrations/whatsapp";
+import { sendWhatsAppMessage, sendWhatsAppTemplateMessage } from "../integrations/whatsapp";
 import { publishInstagramPost } from "../integrations/instagram";
 import { publishFacebookPost } from "../integrations/facebook";
 import { decryptField } from "../lib/piiCrypto";
 import { logAccess } from "../lib/accessLog";
 import { checkUsageLimit, incrementUsage } from "../lib/entitlements";
+import { resolvePlaceholders, CUSTOMER_FIELD_OPTIONS, type PlaceholderMapping } from "../lib/whatsappPlaceholders";
 
 function applyTemplate(template: string, name: string): string {
   return template.replace(/\{\{\s*name\s*\}\}/gi, name);
@@ -17,12 +18,19 @@ function toAbsoluteMediaUrl(mediaUrl: string | null): string | null {
   return `${base}${mediaUrl}`;
 }
 
-async function processWhatsAppBroadcast(content: {
+// Exported for direct unit testing (tests/scheduler-whatsapp-broadcast.test.ts)
+// — the cron job itself (startScheduler below) is what wires this to a real
+// timer/DB poll in production; this function is the actual per-broadcast
+// dispatch logic and is worth testing in isolation from that.
+export async function processWhatsAppBroadcast(content: {
   id: string;
   tenantId: string;
   caption: string | null;
   targetSegment: string | null;
   targetCustomerId: string | null;
+  templateName: string | null;
+  templateLanguage: string | null;
+  placeholderConfig: string | null;
 }) {
   const recipients = content.targetCustomerId
     ? await prisma.customer.findMany({ where: { id: content.targetCustomerId, tenantId: content.tenantId } }) // tenant-scoped
@@ -71,6 +79,14 @@ async function processWhatsAppBroadcast(content: {
     quotaNote = `Sent to ${sendable.length} of ${recipients.length} recipients — monthly WhatsApp message limit reached partway through.`;
   }
 
+  // placeholderConfig is only ever non-null in template mode (see
+  // routes/communication.ts's POST /broadcasts) — parsed once, outside the
+  // loop, since it's the same for every recipient; only its per-recipient
+  // *resolution* (resolvePlaceholders below) varies.
+  const placeholders: PlaceholderMapping[] = content.placeholderConfig ? JSON.parse(content.placeholderConfig) : [];
+  const skipped: { customerId: string; field: string }[] = [];
+  let sentCount = 0;
+
   for (const customer of sendable) {
     // JIT-decrypt right before the send, one customer at a time — never
     // batch-decrypt the recipient list up front. Logged as a system action
@@ -83,15 +99,59 @@ async function processWhatsAppBroadcast(content: {
       field: "phone",
       reason: "broadcast_send",
     });
-    await sendWhatsAppMessage(content.tenantId, phone, applyTemplate(content.caption ?? "", customer.name));
+
+    if (content.templateName && content.templateLanguage) {
+      const resolved = resolvePlaceholders(placeholders, {
+        name: customer.name,
+        segment: customer.segment,
+        totalSpent: customer.totalSpent,
+        lastPurchase: customer.lastPurchase,
+        decryptedPhone: phone,
+      });
+      if (!resolved.ok) {
+        // Skip + log, never fabricate a value or send a broken message —
+        // this recipient simply doesn't get this broadcast; every other
+        // recipient is unaffected.
+        skipped.push({ customerId: customer.id, field: resolved.missingField });
+        console.log(
+          `[broadcast:skip] tenant=${content.tenantId} broadcast=${content.id} customer=${customer.id} missingField=${resolved.missingField}`
+        );
+        continue;
+      }
+      await sendWhatsAppTemplateMessage(
+        content.tenantId,
+        phone,
+        content.templateName,
+        content.templateLanguage,
+        resolved.params.length > 0 ? resolved.params : undefined
+      );
+    } else {
+      await sendWhatsAppMessage(content.tenantId, phone, applyTemplate(content.caption ?? "", customer.name));
+    }
+    sentCount++;
   }
-  await incrementUsage(content.tenantId, "WHATSAPP_MESSAGES", sendable.length);
+  // Only actually-sent messages count against the plan's monthly budget —
+  // a recipient skipped for missing data was never sent, so it shouldn't
+  // consume quota either.
+  await incrementUsage(content.tenantId, "WHATSAPP_MESSAGES", sentCount);
+
+  const notes: string[] = [];
+  if (quotaNote) notes.push(quotaNote);
+  if (skipped.length > 0) {
+    const byField = new Map<string, number>();
+    for (const s of skipped) byField.set(s.field, (byField.get(s.field) ?? 0) + 1);
+    const breakdown = [...byField.entries()]
+      .map(([field, count]) => `${count} missing ${CUSTOMER_FIELD_OPTIONS.find((o) => o.value === field)?.label ?? field}`)
+      .join(", ");
+    notes.push(`${skipped.length} of ${sendable.length} recipients skipped: ${breakdown}`);
+  }
 
   await prisma.scheduledContent.update({
     where: { id: content.id },
-    data: quotaNote
-      ? { status: "failed", errorMessage: quotaNote, publishedAt: new Date() }
-      : { status: "published", publishedAt: new Date() },
+    data:
+      notes.length > 0
+        ? { status: "failed", errorMessage: notes.join(" — "), publishedAt: new Date() }
+        : { status: "published", publishedAt: new Date() },
   });
 }
 
