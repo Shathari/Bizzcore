@@ -684,6 +684,17 @@ model ScheduledContent {
   mediaUrl         String?
   targetSegment    String? // Regular | VIP | Bridal — broadcasts only, null = individual
   targetCustomerId String? // broadcasts only, null = segment-wide
+  // --- WhatsApp template broadcast mode (WHATSAPP_BROADCAST only) ---
+  // Null on every legacy/freeform broadcast and all SOCIAL_POST rows — those
+  // keep sending `caption` as plain text via sendWhatsAppMessage, exactly as
+  // before. When templateName is set, dispatch instead sends the named
+  // Meta-approved template, resolving each {{n}} per recipient from
+  // placeholderConfig instead of using caption's text directly (caption is
+  // still populated, with the template's raw {{n}} body text, purely so the
+  // broadcast list can show "what this will say" without re-querying Meta).
+  templateName      String? // Meta template `name`, e.g. "order_dispatch_update"
+  templateLanguage  String? // Meta template `language` code, e.g. "en_US" — required alongside templateName
+  placeholderConfig String? // JSON-encoded PlaceholderMapping[] (see lib/whatsappPlaceholders.ts) — one entry per {{n}}; null when the template has none
   scheduledAt      DateTime
   status           String    @default("scheduled") // scheduled | published | failed
   errorMessage     String?
