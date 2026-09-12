@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma";
 import { decrypt } from "../lib/crypto";
+import { countDistinctVariables } from "../lib/whatsappPlaceholders";
 
 export type WhatsAppResult = {
   delivered: boolean;
@@ -101,6 +102,65 @@ export async function getTenantWhatsAppCredentials(tenantId: string): Promise<Wh
     return JSON.parse(decrypt(record.encryptedPayload)) as WhatsAppCredentials;
   } catch {
     return null;
+  }
+}
+
+// A tenant's own Meta-approved templates, with each one's BODY text and
+// variable count already extracted — used by routes/whatsappTemplates.ts
+// (the template list view) and routes/communication.ts (the broadcast
+// composer's placeholder detection + server-side validation), so the one
+// Graph API call and one parse live here instead of twice.
+export type WhatsAppTemplateSummary = {
+  id: string;
+  name: string;
+  status: string; // APPROVED | PENDING | REJECTED | ...
+  category: string;
+  language: string;
+  // Raw BODY text with {{n}} tokens intact — null when the template has no
+  // BODY component (shouldn't happen in practice; Meta requires one).
+  bodyText: string | null;
+  bodyVariableCount: number;
+};
+
+type MetaTemplateComponent = { type: string; format?: string; text?: string };
+type MetaTemplateRaw = {
+  id: string;
+  name: string;
+  status: string;
+  category: string;
+  language: string;
+  components?: MetaTemplateComponent[];
+};
+type MetaTemplatesListResponse = { error?: { message?: string }; data?: MetaTemplateRaw[] };
+
+export async function fetchWabaTemplates(
+  creds: Pick<WhatsAppCredentials, "accessToken"> & { wabaId: string }
+): Promise<{ ok: true; templates: WhatsAppTemplateSummary[] } | { ok: false; error: string }> {
+  const apiVersion = process.env.WHATSAPP_GRAPH_API_VERSION ?? "v20.0";
+  try {
+    const resp = await fetch(
+      `https://graph.facebook.com/${apiVersion}/${creds.wabaId}/message_templates?fields=name,status,category,language,components&limit=100`,
+      { headers: { Authorization: `Bearer ${creds.accessToken}` } }
+    );
+    const json = (await resp.json().catch(() => null)) as MetaTemplatesListResponse | null;
+    if (!resp.ok) {
+      return { ok: false, error: json?.error?.message ?? `WhatsApp API error ${resp.status}` };
+    }
+    const templates: WhatsAppTemplateSummary[] = (json?.data ?? []).map((t) => {
+      const bodyText = t.components?.find((c) => c.type === "BODY")?.text ?? null;
+      return {
+        id: t.id,
+        name: t.name,
+        status: t.status,
+        category: t.category,
+        language: t.language,
+        bodyText,
+        bodyVariableCount: bodyText ? countDistinctVariables(bodyText) : 0,
+      };
+    });
+    return { ok: true, templates };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Could not reach WhatsApp API" };
   }
 }
 

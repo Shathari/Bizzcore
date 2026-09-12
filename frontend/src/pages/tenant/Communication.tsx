@@ -17,6 +17,13 @@ import {
 } from "../../api/communication";
 import { listCustomers, type Customer, type Segment } from "../../api/customers";
 import { listCustomerCategories, type CustomerCategory } from "../../api/customerCategories";
+import { listWhatsAppTemplates, type WhatsAppTemplate } from "../../api/whatsappTemplates";
+import {
+  CUSTOMER_FIELD_OPTIONS,
+  formatCustomerFieldValue,
+  type CustomerField,
+  type PlaceholderMapping,
+} from "../../lib/whatsappPlaceholders";
 import { useToast } from "../../components/Toast";
 import { Button } from "../../components/Button";
 import { Modal } from "../../components/Modal";
@@ -463,7 +470,10 @@ function Broadcasts() {
             )}
             {broadcasts?.map((b) => (
               <TableRow key={b.id}>
-                <Td className="max-w-xs truncate text-neutral-800">{b.caption}</Td>
+                <Td className="max-w-xs text-neutral-800">
+                  <p className="truncate">{b.caption}</p>
+                  {b.templateName && <p className="mt-0.5 text-xs text-neutral-400">Template: {b.templateName}</p>}
+                </Td>
                 <Td className="text-neutral-600">
                   {b.targetCustomerName ?? (b.targetSegment ? `${b.targetSegment} segment` : "—")}
                 </Td>
@@ -505,6 +515,47 @@ function Broadcasts() {
   );
 }
 
+// Substitutes each {{n}} in an approved template's raw body text for the
+// composer's live preview — STATIC placeholders use their entered value
+// (or leave the token visible until one's typed), CUSTOMER_FIELD ones pull
+// from `sample` (the currently-previewed recipient) formatted the same way
+// dispatch will format it. A field that's genuinely missing on `sample`
+// (e.g. no lastPurchase on file) surfaces as a warning rather than silently
+// printing "null" — this is only a preview of what real recipients missing
+// that field will NOT receive, since dispatch skips them (see step 3).
+function buildPreview(
+  bodyText: string,
+  placeholders: PlaceholderMapping[],
+  sample: Customer | null
+): { text: string; warnings: string[] } {
+  let text = bodyText;
+  const warnings: string[] = [];
+  for (const p of placeholders) {
+    const token = `{{${p.index}}}`;
+    let value: string;
+    if (p.mode === "STATIC") {
+      value = p.value.trim() ? p.value : token;
+    } else if (!sample) {
+      value = token;
+    } else {
+      const formatted = formatCustomerFieldValue(p.field, sample);
+      if (formatted === null) {
+        const label = CUSTOMER_FIELD_OPTIONS.find((o) => o.value === p.field)?.label ?? p.field;
+        warnings.push(`This sample customer has no ${label} on file — recipients missing it are skipped at send time, not sent a broken message.`);
+        value = `[missing ${label}]`;
+      } else {
+        value = formatted;
+      }
+    }
+    text = text.split(token).join(value);
+  }
+  return { text, warnings };
+}
+
+function templateKey(t: { name: string; language: string }) {
+  return `${t.name}::${t.language}`;
+}
+
 function NewBroadcastModal({
   open,
   onClose,
@@ -514,7 +565,12 @@ function NewBroadcastModal({
   onClose: () => void;
   onCreated: () => void;
 }) {
+  const [messageMode, setMessageMode] = useState<"template" | "freeform">("template");
   const [caption, setCaption] = useState("");
+  const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
+  const [selectedKey, setSelectedKey] = useState("");
+  const [placeholders, setPlaceholders] = useState<PlaceholderMapping[]>([]);
+  const [previewCustomerId, setPreviewCustomerId] = useState("");
   const [targetType, setTargetType] = useState<"segment" | "customer">("segment");
   const [segment, setSegment] = useState<Segment>("");
   const [customerId, setCustomerId] = useState("");
@@ -523,6 +579,9 @@ function NewBroadcastModal({
   const [scheduledAt, setScheduledAt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  const approvedTemplates = templates.filter((t) => t.status === "APPROVED");
+  const selectedTemplate = approvedTemplates.find((t) => templateKey(t) === selectedKey) ?? null;
 
   useEffect(() => {
     if (open) {
@@ -533,11 +592,50 @@ function NewBroadcastModal({
           setSegment((prev) => prev || cats.find((c) => c.isPriority)?.name || cats[0]?.name || "");
         })
         .catch(() => {});
+      listWhatsAppTemplates()
+        .then((res) => setTemplates(res.templates))
+        .catch(() => {});
     }
   }, [open]);
 
+  // A fresh template selection starts every placeholder unmapped (STATIC,
+  // blank) rather than guessing a default — the tenant explicitly chooses
+  // "same for everyone" vs. "from customer data" per placeholder, matching
+  // the mapping model this stores (see lib/whatsappPlaceholders.ts).
+  function selectTemplate(key: string) {
+    setSelectedKey(key);
+    const t = approvedTemplates.find((tpl) => templateKey(tpl) === key);
+    setPlaceholders(Array.from({ length: t?.bodyVariableCount ?? 0 }, (_, i) => ({ index: i + 1, mode: "STATIC", value: "" })));
+  }
+
+  function updatePlaceholder(index: number, next: PlaceholderMapping) {
+    setPlaceholders((prev) => prev.map((p) => (p.index === index ? next : p)));
+  }
+
+  // Recipients this broadcast's current target actually matches — the pool
+  // the live preview's sample picker draws from (see "matters more here"
+  // in the composer's design: the tenant can't review every individual
+  // recipient's message before it sends, unlike a 1:1 reply).
+  const matchingCustomers =
+    targetType === "customer" ? customers.filter((c) => c.id === customerId) : customers.filter((c) => c.segment === segment);
+
+  useEffect(() => {
+    if (!matchingCustomers.some((c) => c.id === previewCustomerId)) {
+      setPreviewCustomerId(matchingCustomers[0]?.id ?? "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetType, segment, customerId, customers]);
+
+  const previewCustomer = matchingCustomers.find((c) => c.id === previewCustomerId) ?? null;
+  const preview =
+    selectedTemplate?.bodyText != null ? buildPreview(selectedTemplate.bodyText, placeholders, previewCustomer) : null;
+
   function resetAndClose() {
+    setMessageMode("template");
     setCaption("");
+    setSelectedKey("");
+    setPlaceholders([]);
+    setPreviewCustomerId("");
     setTargetType("segment");
     setSegment("");
     setCustomerId("");
@@ -557,14 +655,40 @@ function NewBroadcastModal({
       setError("Choose a category to message.");
       return;
     }
+    if (messageMode === "template") {
+      if (!selectedTemplate) {
+        setError("Choose an approved template.");
+        return;
+      }
+      const blank = placeholders.find((p) => p.mode === "STATIC" && !p.value.trim());
+      if (blank) {
+        setError(`Fill in a value for {{${blank.index}}}, or switch it to "From customer data".`);
+        return;
+      }
+    } else if (!caption.trim()) {
+      setError("Write a message.");
+      return;
+    }
+
     setSubmitting(true);
     try {
-      await createBroadcast({
-        caption,
-        targetSegment: targetType === "segment" ? segment : undefined,
-        targetCustomerId: targetType === "customer" ? customerId : undefined,
-        scheduledAt: new Date(scheduledAt).toISOString(),
-      });
+      await createBroadcast(
+        messageMode === "template"
+          ? {
+              templateName: selectedTemplate!.name,
+              templateLanguage: selectedTemplate!.language,
+              placeholders,
+              targetSegment: targetType === "segment" ? segment : undefined,
+              targetCustomerId: targetType === "customer" ? customerId : undefined,
+              scheduledAt: new Date(scheduledAt).toISOString(),
+            }
+          : {
+              caption,
+              targetSegment: targetType === "segment" ? segment : undefined,
+              targetCustomerId: targetType === "customer" ? customerId : undefined,
+              scheduledAt: new Date(scheduledAt).toISOString(),
+            }
+      );
       resetAndClose();
       onCreated();
     } catch (err) {
@@ -580,17 +704,156 @@ function NewBroadcastModal({
     <Modal open={open} onClose={resetAndClose} title="New Broadcast">
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
-          <label className="block text-sm font-medium text-neutral-700">Message</label>
-          <textarea
-            required
-            rows={3}
-            value={caption}
-            onChange={(e) => setCaption(e.target.value)}
-            placeholder="Hi {{name}}, ..."
-            className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
-          />
-          <p className="mt-1 text-xs text-neutral-400">Use {"{{name}}"} to personalize with each customer's name.</p>
+          <label className="block text-sm font-medium text-neutral-700">Message type</label>
+          <div className="mt-1 flex gap-4 text-sm">
+            <label className="flex items-center gap-1.5">
+              <input type="radio" checked={messageMode === "template"} onChange={() => setMessageMode("template")} />
+              Approved template
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input type="radio" checked={messageMode === "freeform"} onChange={() => setMessageMode("freeform")} />
+              Freeform text
+            </label>
+          </div>
+          {messageMode === "freeform" && (
+            <p className="mt-1 text-xs text-amber-600">
+              Freeform messages only deliver to customers within an active 24-hour conversation window with your number — use a
+              template to reach anyone cold.
+            </p>
+          )}
         </div>
+
+        {messageMode === "freeform" ? (
+          <div>
+            <label className="block text-sm font-medium text-neutral-700">Message</label>
+            <textarea
+              required
+              rows={3}
+              value={caption}
+              onChange={(e) => setCaption(e.target.value)}
+              placeholder="Hi {{name}}, ..."
+              className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+            />
+            <p className="mt-1 text-xs text-neutral-400">Use {"{{name}}"} to personalize with each customer's name.</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-neutral-700">Template</label>
+              {approvedTemplates.length === 0 ? (
+                <p className="mt-1 text-sm text-neutral-500">
+                  No approved templates yet — create and submit one for approval in Settings, or switch to freeform text above.
+                </p>
+              ) : (
+                <select
+                  value={selectedKey}
+                  onChange={(e) => selectTemplate(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+                >
+                  <option value="">Choose a template…</option>
+                  {approvedTemplates.map((t) => (
+                    <option key={templateKey(t)} value={templateKey(t)}>
+                      {t.name} ({t.language})
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            {selectedTemplate && (
+              <>
+                {placeholders.length > 0 && (
+                  <div className="space-y-3">
+                    <p className="text-sm font-medium text-neutral-700">Placeholders</p>
+                    {placeholders.map((p) => (
+                      <div key={p.index} className="rounded-xl border border-neutral-200 p-3">
+                        <p className="text-xs font-medium text-neutral-500">{`{{${p.index}}}`}</p>
+                        <div className="mt-1.5 flex gap-4 text-sm">
+                          <label className="flex items-center gap-1.5">
+                            <input
+                              type="radio"
+                              checked={p.mode === "STATIC"}
+                              onChange={() => updatePlaceholder(p.index, { index: p.index, mode: "STATIC", value: "" })}
+                            />
+                            Same for everyone
+                          </label>
+                          <label className="flex items-center gap-1.5">
+                            <input
+                              type="radio"
+                              checked={p.mode === "CUSTOMER_FIELD"}
+                              onChange={() =>
+                                updatePlaceholder(p.index, { index: p.index, mode: "CUSTOMER_FIELD", field: "name" })
+                              }
+                            />
+                            From customer data
+                          </label>
+                        </div>
+                        <div className="mt-2">
+                          {p.mode === "STATIC" ? (
+                            <input
+                              value={p.value}
+                              onChange={(e) => updatePlaceholder(p.index, { index: p.index, mode: "STATIC", value: e.target.value })}
+                              placeholder="Text used for every recipient"
+                              className="w-full rounded-lg border border-neutral-300 px-3 py-1.5 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+                            />
+                          ) : (
+                            <select
+                              value={p.field}
+                              onChange={(e) =>
+                                updatePlaceholder(p.index, { index: p.index, mode: "CUSTOMER_FIELD", field: e.target.value as CustomerField })
+                              }
+                              className="w-full rounded-lg border border-neutral-300 px-3 py-1.5 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+                            >
+                              {CUSTOMER_FIELD_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">Preview</p>
+                    {matchingCustomers.length > 1 && (
+                      <select
+                        value={previewCustomerId}
+                        onChange={(e) => setPreviewCustomerId(e.target.value)}
+                        className="rounded-lg border border-neutral-300 px-2 py-1 text-xs focus:border-maroon focus:outline-none"
+                      >
+                        {matchingCustomers.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            Preview as {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                  {matchingCustomers.length === 0 ? (
+                    <p className="mt-1 text-sm text-neutral-500">
+                      No customers currently match this target — a preview will show once your target has recipients.
+                    </p>
+                  ) : (
+                    <>
+                      <p className="mt-1 whitespace-pre-wrap text-sm text-neutral-800">{preview?.text}</p>
+                      {previewCustomer && <p className="mt-1 text-xs text-neutral-400">as it would look for {previewCustomer.name}</p>}
+                    </>
+                  )}
+                  {preview?.warnings.map((w, i) => (
+                    <p key={i} className="mt-1.5 text-xs text-amber-600">
+                      ⚠ {w}
+                    </p>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         <div>
           <label className="block text-sm font-medium text-neutral-700">Send to</label>

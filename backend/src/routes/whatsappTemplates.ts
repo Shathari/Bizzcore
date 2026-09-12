@@ -4,7 +4,8 @@ import { authenticate } from "../middleware/auth";
 import { resolveTenant } from "../middleware/resolveTenant";
 import { authorize } from "../middleware/authorize";
 import { requirePasswordSet } from "../middleware/requirePasswordSet";
-import { getTenantWhatsAppCredentials } from "../integrations/whatsapp";
+import { getTenantWhatsAppCredentials, fetchWabaTemplates } from "../integrations/whatsapp";
+import { extractVariableTokens, countDistinctVariables } from "../lib/whatsappPlaceholders";
 
 // WhatsApp Message Template management — Meta's Template Management API
 // (whatsapp_business_management's actual App Review use case), scoped to a
@@ -19,17 +20,11 @@ import { getTenantWhatsAppCredentials } from "../integrations/whatsapp";
 const router = Router();
 router.use(authenticate, requirePasswordSet, resolveTenant, authorize("ADMIN"));
 
-type MetaTemplate = {
-  id: string;
-  name: string;
-  status: string; // APPROVED | PENDING | REJECTED | ...
-  category: string;
-  language: string;
-};
-
 // Meta's error envelope is the same shape across every Graph API endpoint —
-// {"error": {"message": "...", ...}} on a non-2xx response.
-type MetaApiResponse = { error?: { message?: string }; data?: MetaTemplate[] };
+// {"error": {"message": "...", ...}} on a non-2xx response. Used below for
+// the template-creation call's own response, which fetchWabaTemplates
+// doesn't cover (that's list-only).
+type MetaApiResponse = { error?: { message?: string } };
 
 router.get("/", async (req, res) => {
   const creds = await getTenantWhatsAppCredentials(req.tenantId!);
@@ -46,21 +41,12 @@ router.get("/", async (req, res) => {
     return;
   }
 
-  const apiVersion = process.env.WHATSAPP_GRAPH_API_VERSION ?? "v20.0";
-  try {
-    const resp = await fetch(
-      `https://graph.facebook.com/${apiVersion}/${creds.wabaId}/message_templates?fields=name,status,category,language&limit=100`,
-      { headers: { Authorization: `Bearer ${creds.accessToken}` } }
-    );
-    const json = (await resp.json().catch(() => null)) as MetaApiResponse | null;
-    if (!resp.ok) {
-      res.status(502).json({ error: json?.error?.message ?? `WhatsApp API error ${resp.status}` });
-      return;
-    }
-    res.json({ connected: true, wabaConfigured: true, templates: json?.data ?? [] });
-  } catch (err) {
-    res.status(502).json({ error: err instanceof Error ? err.message : "Could not reach WhatsApp API" });
+  const result = await fetchWabaTemplates({ wabaId: creds.wabaId, accessToken: creds.accessToken });
+  if (!result.ok) {
+    res.status(502).json({ error: result.error });
+    return;
   }
+  res.json({ connected: true, wabaConfigured: true, templates: result.templates });
 });
 
 // Meta rejects a template outright if its BODY variables don't follow a strict
@@ -69,25 +55,10 @@ router.get("/", async (req, res) => {
 // no static text between them. We validate all of that up front — Meta's own
 // error messages for these cases are generic ("Param text is invalid") and
 // don't point at what's wrong, so we produce actionable messages instead of
-// forwarding a request we already know will bounce.
+// forwarding a request we already know will bounce. (extractVariableTokens
+// itself lives in lib/whatsappPlaceholders.ts, shared with the broadcast
+// composer's placeholder detection on an already-approved template.)
 //
-// The token regex is deliberately loose ([^}]*, not \d+) so malformed
-// placeholders — {{ 1 }}, {{name}}, {{1a}} — are still captured as tokens and
-// reported with a specific message, rather than silently ignored as plain text.
-const VARIABLE_TOKEN_RE = /\{\{([^}]*)\}\}/g;
-
-type VariableToken = { raw: string; inner: string; index: number };
-
-function extractVariableTokens(text: string): VariableToken[] {
-  const tokens: VariableToken[] = [];
-  let match: RegExpExecArray | null;
-  VARIABLE_TOKEN_RE.lastIndex = 0;
-  while ((match = VARIABLE_TOKEN_RE.exec(text)) !== null) {
-    tokens.push({ raw: match[0], inner: match[1], index: match.index });
-  }
-  return tokens;
-}
-
 // Returns an error message describing the first problem found, or undefined
 // if the body's placeholders (there may be none) are all Meta-compliant.
 function validateBodyPlaceholders(bodyText: string): string | undefined {
@@ -134,14 +105,6 @@ function validateBodyPlaceholders(bodyText: string): string | undefined {
   }
 
   return undefined;
-}
-
-// Distinct variable count in an already-validated body (validateBodyPlaceholders
-// guarantees, when it returns no error, that the numbers present are exactly
-// 1..N) — used to size the example.body_text sample array.
-function countBodyVariables(bodyText: string): number {
-  const numbers = new Set(extractVariableTokens(bodyText).map((t) => t.inner));
-  return numbers.size;
 }
 
 // HEADER text and a URL button both cap out at exactly one variable, and it
@@ -357,7 +320,7 @@ router.post("/", async (req, res) => {
   // holding one sample string per {{n}} variable). validateBodyPlaceholders
   // already guarantees the body's variables are exactly {{1}}..{{N}}, so N
   // is just the distinct-variable count.
-  const variableCount = countBodyVariables(parsed.data.bodyText);
+  const variableCount = countDistinctVariables(parsed.data.bodyText);
   const bodyComponent: { type: "BODY"; text: string; example?: { body_text: string[][] } } = {
     type: "BODY",
     text: parsed.data.bodyText,

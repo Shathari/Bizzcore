@@ -1,5 +1,6 @@
 import { apiClient } from "./client";
 import type { Segment } from "./customers";
+import type { PlaceholderMapping } from "../lib/whatsappPlaceholders";
 
 export type Channel = "WHATSAPP" | "WEBSITE_CHAT" | "INSTAGRAM_DM" | "FACEBOOK_DM";
 export type Direction = "INBOUND" | "OUTBOUND";
@@ -69,10 +70,16 @@ export async function startConversation(input: {
 
 export type Broadcast = {
   id: string;
+  // The message text. In template mode this is the template's raw {{n}}
+  // body text (set server-side from the approved template, for display
+  // here) rather than what any individual recipient actually receives.
   caption: string | null;
   targetSegment: Segment | null;
   targetCustomerId: string | null;
   targetCustomerName?: string | null;
+  // Null on a freeform (legacy) broadcast — set together on a template one.
+  templateName: string | null;
+  templateLanguage: string | null;
   scheduledAt: string;
   status: string;
   errorMessage: string | null;
@@ -84,12 +91,18 @@ export async function listBroadcasts(): Promise<Broadcast[]> {
   return data;
 }
 
-export async function createBroadcast(input: {
-  caption: string;
-  targetSegment?: Segment;
-  targetCustomerId?: string;
-  scheduledAt: string;
-}): Promise<Broadcast> {
+export async function createBroadcast(
+  input:
+    | { caption: string; targetSegment?: Segment; targetCustomerId?: string; scheduledAt: string }
+    | {
+        templateName: string;
+        templateLanguage: string;
+        placeholders: PlaceholderMapping[];
+        targetSegment?: Segment;
+        targetCustomerId?: string;
+        scheduledAt: string;
+      }
+): Promise<Broadcast> {
   const { data } = await apiClient.post<Broadcast>("/communication/broadcasts", input);
   return data;
 }

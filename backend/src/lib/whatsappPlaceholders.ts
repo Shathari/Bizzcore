@@ -7,6 +7,42 @@
 // in each of those, and written so a future 1:1-conversation template-send
 // flow can reuse the same types and CUSTOMER_FIELD_OPTIONS list.
 
+// --- {{n}} extraction ----------------------------------------------------
+//
+// The one and only {{n}} tokenizer in the codebase — routes/whatsappTemplates.ts
+// (validating a template being CREATED against Meta's strict syntax/sequencing/
+// placement rules) and this module's own countDistinctVariables below (just
+// counting variables in an ALREADY-APPROVED template's body, for the broadcast
+// composer) both import it rather than each rolling their own regex.
+//
+// Deliberately loose ([^}]*, not \d+) so malformed placeholders — {{ 1 }},
+// {{name}}, {{1a}} — are still captured as tokens instead of silently
+// ignored as plain text; callers that care about strict syntax (see
+// validateBodyPlaceholders in routes/whatsappTemplates.ts) check token.inner
+// themselves.
+const VARIABLE_TOKEN_RE = /\{\{([^}]*)\}\}/g;
+
+export type VariableToken = { raw: string; inner: string; index: number };
+
+export function extractVariableTokens(text: string): VariableToken[] {
+  const tokens: VariableToken[] = [];
+  let match: RegExpExecArray | null;
+  VARIABLE_TOKEN_RE.lastIndex = 0;
+  while ((match = VARIABLE_TOKEN_RE.exec(text)) !== null) {
+    tokens.push({ raw: match[0], inner: match[1], index: match.index });
+  }
+  return tokens;
+}
+
+// Distinct {{n}} count in a template body Meta has already approved (so its
+// variables are guaranteed exactly {{1}}..{{N}} — Meta wouldn't have approved
+// it otherwise) — used to size the broadcast composer's placeholder-mapping
+// form and to validate a submitted placeholderConfig covers every index.
+export function countDistinctVariables(text: string): number {
+  const numbers = new Set(extractVariableTokens(text).map((t) => t.inner));
+  return numbers.size;
+}
+
 // The Customer model fields a placeholder can be mapped to. Deliberately a
 // narrow, explicit allowlist rather than "any Customer column" — e.g. `phone`
 // resolves to the recipient's own real number (safe: it's the same number

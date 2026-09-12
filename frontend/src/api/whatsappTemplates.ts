@@ -6,6 +6,11 @@ export type WhatsAppTemplate = {
   status: string; // APPROVED | PENDING | REJECTED | ...
   category: string;
   language: string;
+  // Raw BODY text with {{n}} tokens intact, and how many distinct variables
+  // it has — used by the broadcast composer (Communication.tsx) to build
+  // the placeholder-mapping form and render a live preview.
+  bodyText: string | null;
+  bodyVariableCount: number;
 };
 
 export type TemplatesStatus = {

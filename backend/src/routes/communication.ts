@@ -5,12 +5,13 @@ import { authenticate } from "../middleware/auth";
 import { resolveTenant } from "../middleware/resolveTenant";
 import { authorize } from "../middleware/authorize";
 import { requirePasswordSet } from "../middleware/requirePasswordSet";
-import { sendWhatsAppMessage } from "../integrations/whatsapp";
+import { sendWhatsAppMessage, getTenantWhatsAppCredentials, fetchWabaTemplates } from "../integrations/whatsapp";
 import { sendInstagramDirectMessage } from "../integrations/instagram";
 import { sendFacebookDirectMessage } from "../integrations/facebook";
 import { checkAndIncrementUsage } from "../lib/entitlements";
 import { isValidCategory } from "../lib/customerCategories";
 import { normalizePhone } from "../lib/piiCrypto";
+import { CUSTOMER_FIELD_OPTIONS, type CustomerField } from "../lib/whatsappPlaceholders";
 
 const router = Router();
 router.use(authenticate, requirePasswordSet, resolveTenant, authorize("ADMIN"));
@@ -263,9 +264,39 @@ router.get("/broadcasts", async (req, res) => {
   );
 });
 
+// Zod's enum needs a literal, non-empty tuple type, not just `string[]` — this
+// derives it from CUSTOMER_FIELD_OPTIONS (lib/whatsappPlaceholders.ts) rather
+// than hand-listing the five field names a second time, so the two can never
+// drift apart.
+const CUSTOMER_FIELD_VALUES = CUSTOMER_FIELD_OPTIONS.map((opt) => opt.value) as [CustomerField, ...CustomerField[]];
+
+// One entry per {{n}} in the chosen template's approved BODY text — see
+// lib/whatsappPlaceholders.ts's PlaceholderMapping type, which this mirrors
+// (kept as its own zod schema, not derived from that type, since zod schemas
+// and plain TS types aren't interchangeable).
+const placeholderMappingSchema = z.discriminatedUnion("mode", [
+  z.object({
+    index: z.number().int().min(1, "Placeholder index must be 1 or greater"),
+    mode: z.literal("STATIC"),
+    value: z.string().trim().min(1, "A static placeholder value can't be empty"),
+  }),
+  z.object({
+    index: z.number().int().min(1, "Placeholder index must be 1 or greater"),
+    mode: z.literal("CUSTOMER_FIELD"),
+    field: z.enum(CUSTOMER_FIELD_VALUES, { errorMap: () => ({ message: "Unknown customer field" }) }),
+  }),
+]);
+
 const createBroadcastSchema = z
   .object({
-    caption: z.string().trim().min(1, "Message is required"),
+    // Freeform mode: caption is the message itself. Template mode:
+    // templateName/templateLanguage select an approved Meta template and
+    // caption is ignored (the handler below sets it from the template's own
+    // body text, purely for display in the broadcast list).
+    caption: z.string().trim().min(1, "Message is required").optional(),
+    templateName: z.string().trim().min(1).optional(),
+    templateLanguage: z.string().trim().min(1).optional(),
+    placeholders: z.array(placeholderMappingSchema).optional(),
     // Not a fixed enum — validated against the tenant's own live category
     // list below (see lib/customerCategories.ts), same as
     // routes/customers.ts's create/import validation.
@@ -275,6 +306,12 @@ const createBroadcastSchema = z
   })
   .refine((d) => Boolean(d.targetSegment) !== Boolean(d.targetCustomerId), {
     message: "Choose either a segment or an individual customer, not both",
+  })
+  .refine((d) => Boolean(d.templateName) === Boolean(d.templateLanguage), {
+    message: "A template broadcast needs both a template name and its language",
+  })
+  .refine((d) => Boolean(d.caption) || Boolean(d.templateName), {
+    message: "Write a message or choose an approved template",
   });
 
 router.post("/broadcasts", async (req, res) => {
@@ -304,14 +341,72 @@ router.post("/broadcasts", async (req, res) => {
     return;
   }
 
+  let caption = d.caption ?? null;
+  let templateName: string | null = null;
+  let templateLanguage: string | null = null;
+  let placeholderConfig: string | null = null;
+
+  if (d.templateName) {
+    // Re-fetch the template from Meta rather than trusting whatever
+    // placeholder count the composer thinks it saw — the tenant's templates
+    // can change between when the composer loaded and when this request
+    // lands, and a stale/tampered count here would only surface as a broken
+    // send at dispatch time, per-recipient, with no chance to fix it first.
+    const creds = await getTenantWhatsAppCredentials(req.tenantId!);
+    if (!creds?.wabaId) {
+      res.status(400).json({ error: "Connect WhatsApp and add your WhatsApp Business Account ID in Settings first." });
+      return;
+    }
+    const result = await fetchWabaTemplates({ wabaId: creds.wabaId, accessToken: creds.accessToken });
+    if (!result.ok) {
+      res.status(502).json({ error: result.error });
+      return;
+    }
+    const template = result.templates.find((t) => t.name === d.templateName && t.language === d.templateLanguage);
+    if (!template) {
+      res.status(400).json({ error: `Template "${d.templateName}" (${d.templateLanguage}) not found.` });
+      return;
+    }
+    if (template.status !== "APPROVED") {
+      res.status(400).json({ error: `Template "${d.templateName}" is ${template.status.toLowerCase()}, not approved yet.` });
+      return;
+    }
+
+    const variableCount = template.bodyVariableCount;
+    const placeholders = d.placeholders ?? [];
+    const indices = placeholders.map((p) => p.index);
+    if (new Set(indices).size !== indices.length) {
+      res.status(400).json({ error: "Each placeholder can only be mapped once." });
+      return;
+    }
+    if (indices.some((i) => i < 1 || i > variableCount)) {
+      res.status(400).json({ error: `This template only has ${variableCount} placeholder(s).` });
+      return;
+    }
+    for (let i = 1; i <= variableCount; i++) {
+      if (!indices.includes(i)) {
+        res.status(400).json({ error: `Placeholder {{${i}}} needs a mapping — static text or a customer field.` });
+        return;
+      }
+    }
+
+    caption = template.bodyText;
+    templateName = template.name;
+    templateLanguage = template.language;
+    placeholderConfig = variableCount > 0 ? JSON.stringify(placeholders) : null;
+  }
+
   const broadcast = await prisma.scheduledContent.create({
     data: {
       tenantId: req.tenantId!, // tenant-scoped
       kind: "WHATSAPP_BROADCAST",
       channel: "WHATSAPP",
-      caption: d.caption,
+      caption,
       targetSegment: d.targetSegment ?? null,
       targetCustomerId: d.targetCustomerId ?? null,
+      templateName,
+      templateLanguage,
+      placeholderConfig,
       scheduledAt,
       status: "scheduled",
     },
