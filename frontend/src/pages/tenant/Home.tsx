@@ -56,7 +56,11 @@ export default function Home() {
 
       <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard icon={MessageCircle} label="Today's Inquiries" value={summary?.todaysInquiries} to="/dashboard/booking-requests" />
-        <StatCard icon={Eye} label="Website Visitors" value={summary?.websiteVisitorsToday} />
+        {/* Only rendered once the dashboard summary confirms the Website
+            module is active for this tenant — previously rendered
+            unconditionally, showing a real-looking "0" for tenants with no
+            website module at all. */}
+        {summary?.modules.website && <StatCard icon={Eye} label="Website Visitors" value={summary.websiteVisitorsToday} />}
         <StatCard icon={UserPlus} label="New Customers" value={summary?.newCustomersToday} />
         <StatCard icon={Clock} label="Pending Follow-ups" value={summary?.pendingFollowUps} />
       </div>

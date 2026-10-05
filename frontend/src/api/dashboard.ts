@@ -1,6 +1,7 @@
 import { apiClient } from "./client";
 
 export type DashboardSummary = {
+  modules: { whatsappRepeatSales: boolean; website: boolean };
   todaysInquiries: number;
   websiteVisitorsToday: number;
   newCustomersToday: number;

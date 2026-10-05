@@ -30,28 +30,28 @@ generator client {
 // ---------------------------------------------------------------------------
 
 model Tenant {
-  id                 String    @id @default(cuid())
-  businessName       String
-  websiteUrl         String?
-  ownerEmail         String
-  ownerPhone         String?
-  status             String    @default("PendingSetup") // Active | Suspended | PendingSetup
+  id                      String    @id @default(cuid())
+  businessName            String
+  websiteUrl              String?
+  ownerEmail              String
+  ownerPhone              String?
+  status                  String    @default("PendingSetup") // Active | Suspended | PendingSetup
   // Replaces the old placeholder `plan String?` field (confirmed empty on
   // every existing tenant before this migration) with the real
   // subscription relation. SetNull, not Cascade/Restrict: deleting a Plan
   // must never delete or block-delete the tenants subscribed to it, just
   // leave them unassigned.
-  planId             String?
-  plan               Plan?     @relation(fields: [planId], references: [id], onDelete: SetNull)
-  subscriptionStatus String    @default("Trialing") // Active | PastDue | Cancelled | Trialing
-  currentPeriodStart DateTime?
-  currentPeriodEnd   DateTime?
-  address            String?
-  customDomain       String?   @unique
+  planId                  String?
+  plan                    Plan?     @relation(fields: [planId], references: [id], onDelete: SetNull)
+  subscriptionStatus      String    @default("Trialing") // Active | PastDue | Cancelled | Trialing
+  currentPeriodStart      DateTime?
+  currentPeriodEnd        DateTime?
+  address                 String?
+  customDomain            String?   @unique
   // Set from the cover/logo image uploaded when Super Admin creates the
   // business (see routes/super-admin.ts) — shown as the Business Admin's
   // dashboard avatar (TopBar).
-  logoUrl            String?
+  logoUrl                 String?
   // Soft-delete marker (routes/super-admin.ts DELETE /businesses/:id) — set
   // instead of removing the row so the business disappears from the
   // dashboard and blocks login/tenant-scoped access (see
@@ -60,9 +60,27 @@ model Tenant {
   // a Suspended tenant can still log in to see why; a soft-deleted one
   // can't at all. Permanent delete (see AuditLog.actor/targetTenant below)
   // removes the row entirely instead of setting this.
-  deletedAt          DateTime?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  deletedAt               DateTime?
+  // Opaque random token (see lib/consentToken.ts) powering the public,
+  // unauthenticated self-service consent page at /consent/:token — printed
+  // as a QR code for a checkout counter. Deliberately NOT the tenant's own
+  // `id`: that's permanent and used everywhere else, so it can't serve as a
+  // revocable credential. Null until the tenant's first "Generate consent
+  // link" click; regenerating overwrites it, which is the entire revoke
+  // mechanism — any previously printed QR code immediately 404s once its
+  // token no longer matches any row (see routes/publicConsent.ts).
+  consentPageToken        String?   @unique
+  // Days since a customer's lastPurchase (or since createdAt, for a
+  // customer who's never purchased) before jobs/scheduler.ts's inactivity
+  // job auto-tags them "Inactive" (see CustomerTag/CustomerTagAssignment
+  // below). A plain Int with a sensible default, not nullable/opt-in — every
+  // tenant gets a working default (90 days) from day one; no Settings UI to
+  // change it exists yet (deferred to when this is wired into the UI), but
+  // the column already supports a different value per tenant when that UI
+  // lands, without a further migration.
+  inactivityThresholdDays Int       @default(90)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   users                     User[]
   customers                 Customer[]
@@ -91,6 +109,9 @@ model Tenant {
   payments                  Payment[]
   manualGrants              ManualGrant[]              @relation("ManualGrantTenant")
   customerCategories        CustomerCategory[]
+  consentEvents             ConsentEvent[]
+  customerTags              CustomerTag[]
+  customerTagAssignments    CustomerTagAssignment[]
   // Points at whichever ManualGrant (if any) is currently driving planId/
   // subscriptionStatus/currentPeriodEnd above. Null means the tenant's
   // current state is either unpaid or a REAL payment, never a comp — this
@@ -122,9 +143,9 @@ model User {
 
   aiGenerations       AIGeneration[]
   researchReports     ContentResearchReport[]
-  auditLogActions     AuditLog[]           @relation("AuditLogActor")
+  auditLogActions     AuditLog[]              @relation("AuditLogActor")
   passwordResetTokens PasswordResetToken[]
-  manualGrantsGranted ManualGrant[]        @relation("ManualGrantGrantedBy")
+  manualGrantsGranted ManualGrant[]           @relation("ManualGrantGrantedBy")
 
   @@index([tenantId])
 }
@@ -178,18 +199,65 @@ model Customer {
   totalSpent       Float     @default(0)
   lastPurchase     DateTime?
   notes            String?
+  // UNKNOWN | OPTED_IN | OPTED_OUT — WhatsApp marketing consent, current
+  // state only. Defaults to UNKNOWN (never OPTED_IN) even for a customer
+  // imported/created before this field existed: consent to be messaged is
+  // never assumed, only ever recorded when it actually happens (a customer
+  // reply, a staff action, an explicit import flag) — see ConsentEvent below
+  // for the auditable history of how a customer arrived at their current
+  // state. Every write to this column MUST go through
+  // lib/consent.ts's recordConsentTransition, never a bare update, so this
+  // column and ConsentEvent's history can never drift apart.
+  consentStatus    String    @default("UNKNOWN")
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  conversations Conversation[]
-  purchases     Purchase[]
-  inquiries     Inquiry[]
-  accessLogs    AccessLog[]
+  conversations  Conversation[]
+  purchases      Purchase[]
+  inquiries      Inquiry[]
+  accessLogs     AccessLog[]
+  consentEvents  ConsentEvent[]
+  tagAssignments CustomerTagAssignment[]
 
   @@index([tenantId])
   @@index([tenantId, segment])
   @@index([tenantId, phoneHash])
   @@index([tenantId, birthdayMonthDay])
+  @@index([tenantId, consentStatus])
+}
+
+// Auditable history of every WhatsApp marketing-consent transition for a
+// Customer — Customer.consentStatus is only ever the CURRENT state; this is
+// the record of how it got there and why, which the current state alone
+// can't answer (a Super Admin/compliance question like "when did this
+// customer opt out, and was it their own STOP reply or a staff action?"
+// needs this table, not just the column). Rows are never updated or
+// deleted — a correction is a new event, same as AuditLog's own append-only
+// discipline elsewhere in this schema.
+model ConsentEvent {
+  id            String   @id @default(cuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customerId    String
+  customer      Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  previousState String // UNKNOWN | OPTED_IN | OPTED_OUT
+  newState      String // UNKNOWN | OPTED_IN | OPTED_OUT
+  // CUSTOMER_REPLY (a STOP/unsubscribe-style inbound WhatsApp message,
+  // handled server-side in routes/webhooks/whatsapp.ts — unconditional,
+  // never gated by any campaign/route) | STAFF_ACTION (a tenant Admin
+  // changing it by hand) | IMPORT (set during a customer CSV import) |
+  // SYSTEM (any other automated transition) | CUSTOMER_SELF_SERVICE (the
+  // public consent QR-code page, routes/publicConsent.ts).
+  source        String
+  // User id, no FK relation — same reasoning as AccessLog.actorId: this
+  // event stays meaningful history even if the acting user is later
+  // deleted. Only ever set for source: STAFF_ACTION; null for every other
+  // source (CUSTOMER_REPLY/CUSTOMER_SELF_SERVICE have no staff actor by
+  // definition, IMPORT/SYSTEM are not tied to one specific user).
+  actorId       String?
+  createdAt     DateTime @default(now())
+
+  @@index([tenantId, customerId])
 }
 
 // Tenant-scoped customer/booking categorization — replaces what used to be
@@ -205,25 +273,67 @@ model Customer {
 // and a category can be deleted without a cascade touching those rows
 // (existing rows just keep the old name as inert text).
 model CustomerCategory {
-  id        String   @id @default(cuid())
-  tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  name      String
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name       String
   // Seeded (Regular/VIP/Bridal) vs. tenant-created — display/ordering hint
   // only; a built-in is just as renameable/deletable as a custom one.
-  isBuiltIn Boolean  @default(false)
+  isBuiltIn  Boolean  @default(false)
   // Drives the Home dashboard "priority follow-ups" stat card (see
   // routes/dashboard.ts) — replaces that route's old hardcoded
   // `segment: { in: ["VIP", "Bridal"] } }` filter. Seeded true for VIP/
   // Bridal, false for Regular; freely toggleable per tenant thereafter,
   // including on custom categories.
-  isPriority Boolean @default(false)
-  sortOrder Int      @default(0)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  isPriority Boolean  @default(false)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   @@unique([tenantId, name])
   @@index([tenantId])
+}
+
+// Free-form, tenant-defined tags for segmentation — deliberately separate
+// from CustomerCategory/Customer.segment (that stays exactly as it is: one
+// segment per customer, seeded Regular/VIP/Bridal). A customer can carry
+// any number of these, e.g. "Big Spender", "Lapsed", "Referred a Friend" —
+// nothing here is hardcoded to any vertical. Not tenant-scoped-unique on
+// name alone across all customers, just per-tenant: @@unique below.
+model CustomerTag {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name      String
+  createdAt DateTime @default(now())
+
+  assignments CustomerTagAssignment[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+// Join row for the many-to-many between Customer and CustomerTag, plus
+// provenance: was this applied by a staff member (source: STAFF, the
+// default — someone tagged a customer by hand) or by
+// jobs/scheduler.ts's inactivity job (source: SYSTEM — see Tenant.
+// inactivityThresholdDays)? Lets staff tell "the system flagged this" apart
+// from their own tagging without a second table, same discipline as
+// ConsentEvent.source elsewhere in this schema.
+model CustomerTagAssignment {
+  id         String      @id @default(cuid())
+  tenantId   String
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customerId String
+  customer   Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  tagId      String
+  tag        CustomerTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  source     String      @default("STAFF") // STAFF | SYSTEM
+  createdAt  DateTime    @default(now())
+
+  @@unique([customerId, tagId])
+  @@index([tenantId, customerId])
+  @@index([tenantId, tagId])
 }
 
 // Individual sale records. Drives the Home dashboard revenue trend chart and
@@ -262,8 +372,6 @@ model Conversation {
 
   messages Message[]
 
-  @@index([tenantId])
-  @@index([tenantId, channel])
   // One conversation per contact per channel per tenant — lets the webhook
   // upsert an inbound-message conversation instead of racing two concurrent
   // deliveries into two rows for the same contact. NULL contactHandle
@@ -271,6 +379,8 @@ model Conversation {
   // Postgres treats every NULL as distinct under a unique index, so
   // multiple WEBSITE_CHAT conversations per tenant remain unaffected.
   @@unique([tenantId, channel, contactHandle])
+  @@index([tenantId])
+  @@index([tenantId, channel])
 }
 
 model Message {
@@ -435,13 +545,13 @@ model Feature {
 // middleware/requireContentWriteAccess.ts) — read access only needs
 // `active`; they never see this row itself either way.
 model WebsiteIntegration {
-  id                       String    @id @default(cuid())
+  id                       String      @id @default(cuid())
   tenantId                 String
-  tenant                   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant                   Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   featureId                String
-  feature                  Feature   @relation(fields: [featureId], references: [id])
+  feature                  Feature     @relation(fields: [featureId], references: [id])
   baseUrl                  String
-  authType                 String    @default("none") // none | bearer | apiKey | basic | login — shared default across every HTTP method unless overridden per-method below
+  authType                 String      @default("none") // none | bearer | apiKey | basic | login — shared default across every HTTP method unless overridden per-method below
   // AES-256-GCM encrypted JSON blob, shape depends on authType — see
   // lib/websiteApiClient.ts. Null when authType is "none" or "login" (a
   // "login"-mode integration's actual credentials/token live on its shared
@@ -472,15 +582,15 @@ model WebsiteIntegration {
   // manually-pasted bearer token can equally go stale. For authType
   // "login" this mirrors (and is kept in sync with) the shared
   // DataSource's own credentialStatus — see reconcileCredentialStatus.
-  credentialStatus         String    @default("OK")
-  active                   Boolean   @default(true)
+  credentialStatus         String      @default("OK")
+  active                   Boolean     @default(true)
   // Per-feature, 3-state with `active`: inactive = No Access, active+VIEW
   // = read-only, active+MANAGE = Business Admin can
   // create/update/delete/import this feature's data too. Replaces the old
   // tenant-wide Tenant.websiteContentManagedByAdmin boolean (per-feature,
   // not per-tenant) and the old canBusinessAdminManage boolean (adds the
   // explicit "View Only" state instead of collapsing it into "false").
-  permissionLevel          String    @default("VIEW") // VIEW | MANAGE
+  permissionLevel          String      @default("VIEW") // VIEW | MANAGE
   // Optional JSON { dashboardFieldKey: externalFieldKey } — tenant-specific
   // rename applied to outbound payloads and inbound import parsing, since
   // two tenants on the same global Feature may name fields differently on
@@ -539,8 +649,8 @@ model WebsiteIntegration {
   // safe-by-default (read/import only) until someone deliberately opts it
   // into write-back too.
   confidentialWriteEnabled String?
-  createdAt                DateTime  @default(now())
-  updatedAt                DateTime  @updatedAt
+  createdAt                DateTime    @default(now())
+  updatedAt                DateTime    @updatedAt
 
   endpoints           WebsiteIntegrationEndpoint[]
   schemaSnapshots     WebsiteIntegrationSchemaSnapshot[]
@@ -674,16 +784,16 @@ model WebsiteContentItem {
 // ---------------------------------------------------------------------------
 
 model ScheduledContent {
-  id               String    @id @default(cuid())
-  tenantId         String
-  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  kind             String // SOCIAL_POST | WHATSAPP_BROADCAST
-  channel          String // INSTAGRAM | FACEBOOK | WHATSAPP
-  postType         String? // POST | STORY | REEL — social posts only
-  caption          String?
-  mediaUrl         String?
-  targetSegment    String? // Regular | VIP | Bridal — broadcasts only, null = individual
-  targetCustomerId String? // broadcasts only, null = segment-wide
+  id                String    @id @default(cuid())
+  tenantId          String
+  tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kind              String // SOCIAL_POST | WHATSAPP_BROADCAST
+  channel           String // INSTAGRAM | FACEBOOK | WHATSAPP
+  postType          String? // POST | STORY | REEL — social posts only
+  caption           String?
+  mediaUrl          String?
+  targetSegment     String? // Regular | VIP | Bridal — broadcasts only, null = individual
+  targetCustomerId  String? // broadcasts only, null = segment-wide
   // --- WhatsApp template broadcast mode (WHATSAPP_BROADCAST only) ---
   // Null on every legacy/freeform broadcast and all SOCIAL_POST rows — those
   // keep sending `caption` as plain text via sendWhatsAppMessage, exactly as
@@ -695,11 +805,11 @@ model ScheduledContent {
   templateName      String? // Meta template `name`, e.g. "order_dispatch_update"
   templateLanguage  String? // Meta template `language` code, e.g. "en_US" — required alongside templateName
   placeholderConfig String? // JSON-encoded PlaceholderMapping[] (see lib/whatsappPlaceholders.ts) — one entry per {{n}}; null when the template has none
-  scheduledAt      DateTime
-  status           String    @default("scheduled") // scheduled | published | failed
-  errorMessage     String?
-  publishedAt      DateTime?
-  createdAt        DateTime  @default(now())
+  scheduledAt       DateTime
+  status            String    @default("scheduled") // scheduled | published | failed
+  errorMessage      String?
+  publishedAt       DateTime?
+  createdAt         DateTime  @default(now())
 
   @@index([tenantId])
   @@index([status, scheduledAt])
@@ -759,18 +869,18 @@ model AIGeneration {
 // ---------------------------------------------------------------------------
 
 model ContentResearchReport {
-  id           String    @id @default(cuid())
+  id           String   @id @default(cuid())
   tenantId     String
-  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   userId       String?
-  user         User?     @relation(fields: [userId], references: [id])
-  status       String    @default("PENDING") // PENDING | FETCHING | ANALYZING | COMPLETED | FAILED
+  user         User?    @relation(fields: [userId], references: [id])
+  status       String   @default("PENDING") // PENDING | FETCHING | ANALYZING | COMPLETED | FAILED
   seedLinks    String // JSON-encoded string[] as submitted by the tenant
   summary      String? // AI narrative summary of cross-link patterns — abstracted, never a verbatim quote from any source
   patterns     String? // JSON-encoded [{ id, type: HOOK|FORMAT|TOPIC|STRUCTURE|CADENCE, title, description, occurrenceCount, exampleLinkIds }]
   errorMessage String?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   links       ContentResearchLink[]
   generations AIGeneration[]
@@ -852,7 +962,7 @@ model AuditLog {
   // (actions they performed) goes with them. Super Admin users are never
   // deleted by tenant deletion, so their audit history is unaffected.
   actor          User     @relation("AuditLogActor", fields: [actorId], references: [id], onDelete: Cascade)
-  action         String // BUSINESS_CREATED | BUSINESS_SUSPENDED | BUSINESS_REACTIVATED | BUSINESS_UPDATED | BUSINESS_SOFT_DELETED | BUSINESS_RESTORED | BUSINESS_PERMANENTLY_DELETED | CREDENTIALS_RESENT | FEATURE_ITEM_CREATED | FEATURE_ITEM_UPDATED | FEATURE_ITEM_DELETED | FEATURE_ITEM_IMPORTED | FEATURE_ITEM_SYNCED | FEATURE_CREATED | FEATURE_UPDATED | FEATURE_DELETED | INTEGRATION_CONFIG_SAVED | INTEGRATION_CONFIG_DELETED
+  action         String // BUSINESS_CREATED | BUSINESS_SUSPENDED | BUSINESS_REACTIVATED | BUSINESS_UPDATED | BUSINESS_SOFT_DELETED | BUSINESS_RESTORED | BUSINESS_PERMANENTLY_DELETED | CREDENTIALS_RESENT | FEATURE_ITEM_CREATED | FEATURE_ITEM_UPDATED | FEATURE_ITEM_DELETED | FEATURE_ITEM_IMPORTED | FEATURE_ITEM_SYNCED | FEATURE_CREATED | FEATURE_UPDATED | FEATURE_DELETED | INTEGRATION_CONFIG_SAVED | INTEGRATION_CONFIG_DELETED | REVIEWER_ADMIN_CREATED
   // Historical rows may also contain WEBSITE_CONTENT_ACCESS_GRANTED/REVOKED
   // (tenant-wide flag, retired in favor of per-feature permissionLevel).
   targetTenantId String?

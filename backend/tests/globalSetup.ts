@@ -48,7 +48,11 @@ export default async function globalSetup() {
   }
 
   const testSchemaPath = writeTestSchema(backendRoot);
-  const testEnv = { ...process.env, DATABASE_URL: `file:${dbPath}` };
+  // Use the same schema-relative SQLite URL as setup.ts and .env.test.
+  // Prisma 5's engine fails creating the SQLite database with the inherited
+  // RUST_LOG=warn in this Windows environment; info permits initialization.
+  // Limit this override to the setup subprocesses, never the application.
+  const testEnv = { ...process.env, DATABASE_URL: "file:./test.db", RUST_LOG: "info" };
 
   execSync(`npx prisma generate --schema="${testSchemaPath}"`, { cwd: backendRoot, env: testEnv, stdio: "inherit" });
   execSync(`npx prisma db push --schema="${testSchemaPath}" --skip-generate --accept-data-loss`, {
@@ -71,7 +75,7 @@ export default async function globalSetup() {
   // the seed helpers are typed against — the schema is deliberately written
   // to produce the same model shape on either provider (see schema.prisma's
   // header comment), so this is safe.
-  const prisma = new TestPrismaClient({ datasources: { db: { url: `file:${dbPath}` } } }) as unknown as PrismaClient;
+  const prisma = new TestPrismaClient({ datasources: { db: { url: "file:./test.db" } } }) as unknown as PrismaClient;
   await seedBuiltInFeatures(prisma);
   // Same reasoning as the Feature catalog above — the 4 real plans and the
   // add-on catalog are seeded data tests need to reference by real name/

@@ -25,6 +25,20 @@ describe("communication: POST /conversations (start a new conversation)", () => 
     fetchSpy.mockRestore();
   });
 
+  it("reuses an existing plus-format thread when the same international number is entered without plus", async () => {
+    const { tenant, admin } = await createTenantWithAdmin();
+    await grantPermissivePlan(tenant.id);
+    const cookie = await loginAs(admin.email);
+    const conversation = await prisma.conversation.create({ data: {
+      tenantId: tenant.id, channel: "WHATSAPP", contactHandle: "+919800000039", contactName: "Existing contact",
+    } });
+    const res = await request(app).post("/api/communication/conversations").set("Cookie", cookie)
+      .send({ channel: "WHATSAPP", contactHandle: "919800000039", body: "Follow-up" });
+    expect(res.status).toBe(201);
+    expect(await prisma.conversation.count({ where: { tenantId: tenant.id } })).toBe(1);
+    expect(await prisma.message.count({ where: { conversationId: conversation.id } })).toBe(1);
+  });
+
   it("rejects an unauthenticated request", async () => {
     const res = await request(app)
       .post("/api/communication/conversations")
@@ -73,7 +87,7 @@ describe("communication: POST /conversations (start a new conversation)", () => 
     expect(fetchSpy).not.toHaveBeenCalled();
 
     const stored = await prisma.conversation.findFirst({
-      where: { tenantId: tenant.id, channel: "WHATSAPP", contactHandle: "+919800000032" },
+      where: { tenantId: tenant.id, channel: "WHATSAPP", contactHandle: "919800000032" },
     });
     expect(stored).not.toBeNull();
   });
@@ -113,7 +127,7 @@ describe("communication: POST /conversations (start a new conversation)", () => 
       .send({ channel: "WHATSAPP", contactHandle: "+91 98000 00034", body: "hi" });
 
     const conversations = await prisma.conversation.findMany({
-      where: { tenantId: tenant.id, channel: "WHATSAPP", contactHandle: "+919800000034" },
+      where: { tenantId: tenant.id, channel: "WHATSAPP", contactHandle: "919800000034" },
     });
     expect(conversations).toHaveLength(1);
   });
@@ -135,7 +149,7 @@ describe("communication: POST /conversations (start a new conversation)", () => 
     expect(first.body.conversation.id).toBe(second.body.conversation.id);
 
     const conversations = await prisma.conversation.findMany({
-      where: { tenantId: tenant.id, channel: "WHATSAPP", contactHandle: "+919800000035" },
+      where: { tenantId: tenant.id, channel: "WHATSAPP", contactHandle: "919800000035" },
     });
     expect(conversations).toHaveLength(1);
     const messages = await prisma.message.findMany({ where: { conversationId: conversations[0].id } });
@@ -157,7 +171,7 @@ describe("communication: POST /conversations (start a new conversation)", () => 
       .send({ channel: "WHATSAPP", contactHandle: "+919800000036", body: "follow-up, no name given this time" });
 
     const conversation = await prisma.conversation.findFirst({
-      where: { tenantId: tenant.id, channel: "WHATSAPP", contactHandle: "+919800000036" },
+      where: { tenantId: tenant.id, channel: "WHATSAPP", contactHandle: "919800000036" },
     });
     expect(conversation!.contactName).toBe("Kavya Iyer");
   });
@@ -178,7 +192,7 @@ describe("communication: POST /conversations (start a new conversation)", () => 
     expect(res.body.code).toBe("FEATURE_NOT_INCLUDED");
 
     const conversation = await prisma.conversation.findFirst({
-      where: { tenantId: tenant.id, channel: "WHATSAPP", contactHandle: "+919800000037" },
+      where: { tenantId: tenant.id, channel: "WHATSAPP", contactHandle: "919800000037" },
     });
     expect(conversation).toBeNull();
   });
@@ -195,7 +209,7 @@ describe("communication: POST /conversations (start a new conversation)", () => 
       .send({ channel: "WHATSAPP", contactHandle: "+919800000038", body: "hi" });
 
     const leaked = await prisma.conversation.findFirst({
-      where: { tenantId: tenantB.id, channel: "WHATSAPP", contactHandle: "+919800000038" },
+      where: { tenantId: tenantB.id, channel: "WHATSAPP", contactHandle: "919800000038" },
     });
     expect(leaked).toBeNull();
   });

@@ -6,6 +6,7 @@ import { resolveTenant } from "../middleware/resolveTenant";
 import { authorize } from "../middleware/authorize";
 import { requirePasswordSet } from "../middleware/requirePasswordSet";
 import { encrypt, decrypt } from "../lib/crypto";
+import { generateConsentToken } from "../lib/consentToken";
 
 // Per-tenant integration credentials — entered by the tenant admin here,
 // separate from Super Admin's business-provisioning flow. These payload
@@ -167,6 +168,44 @@ router.put("/integrations/whatsapp", async (req, res) => {
 router.delete("/integrations/whatsapp", async (req, res) => {
   await prisma.integrationCredential.deleteMany({
     where: { tenantId: req.tenantId, provider: "WHATSAPP" }, // tenant-scoped
+  });
+  res.status(204).send();
+});
+
+// --- Consent page (Channel 3 — customer self-service opt-in QR code) -----
+
+router.get("/consent-page", async (req, res) => {
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: req.tenantId! }, // tenant-scoped
+    select: { consentPageToken: true },
+  });
+  res.json({ token: tenant?.consentPageToken ?? null });
+});
+
+// Generates (or regenerates) this tenant's consent-page token. Regenerating
+// immediately invalidates any previously printed QR code (see
+// routes/publicConsent.ts) — a new one takes its place in the same request,
+// so there's no gap with no active link. Use POST /consent-page/revoke
+// below instead when the tenant wants that gap (no active link at all)
+// rather than an immediate replacement.
+router.post("/consent-page/regenerate", async (req, res) => {
+  const token = generateConsentToken();
+  await prisma.tenant.update({
+    where: { id: req.tenantId! }, // tenant-scoped
+    data: { consentPageToken: token },
+  });
+  res.json({ token });
+});
+
+// Sets consentPageToken back to null with no replacement — any previously
+// printed QR code 404s immediately, and no new link exists until the
+// tenant explicitly generates one again. Distinct from regenerate above:
+// this is for "take the sign down and don't want it working even by
+// accident," not the normal rotate-the-link case.
+router.post("/consent-page/revoke", async (req, res) => {
+  await prisma.tenant.update({
+    where: { id: req.tenantId! }, // tenant-scoped
+    data: { consentPageToken: null },
   });
   res.status(204).send();
 });

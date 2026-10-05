@@ -108,8 +108,17 @@ router.post("/conversations", async (req, res) => {
   // silently forking into two threads for the same contact. Instagram/
   // Facebook handles/page-scoped ids aren't phone numbers, so they're only
   // trimmed (already done by the schema above).
-  const contactHandle = channel === "WHATSAPP" ? normalizePhone(parsed.data.contactHandle) : parsed.data.contactHandle;
+  let contactHandle = channel === "WHATSAPP" ? normalizePhone(parsed.data.contactHandle) : parsed.data.contactHandle;
   const tenantId = req.tenantId!;
+  // Reuse legacy '+' threads while new numbers use the canonical identity.
+  // Never rename a stored handle or split the customer's existing history.
+  if (channel === "WHATSAPP") {
+    const existing = await prisma.conversation.findFirst({
+      where: { tenantId, channel, contactHandle: { in: [contactHandle, `+${contactHandle}`] } },
+      select: { contactHandle: true },
+    });
+    contactHandle = existing?.contactHandle ?? contactHandle;
+  }
 
   // Same metering as the reply route below — see its comment for why only
   // WhatsApp is checked here.

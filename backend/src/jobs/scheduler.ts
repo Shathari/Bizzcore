@@ -1,12 +1,13 @@
 import cron from "node-cron";
 import { prisma } from "../lib/prisma";
-import { sendWhatsAppMessage, sendWhatsAppTemplateMessage } from "../integrations/whatsapp";
+import { sendWhatsAppMessage, sendWhatsAppTemplateMessage, type WhatsAppResult } from "../integrations/whatsapp";
 import { publishInstagramPost } from "../integrations/instagram";
 import { publishFacebookPost } from "../integrations/facebook";
 import { decryptField } from "../lib/piiCrypto";
 import { logAccess } from "../lib/accessLog";
 import { checkUsageLimit, incrementUsage } from "../lib/entitlements";
 import { resolvePlaceholders, CUSTOMER_FIELD_OPTIONS, type PlaceholderMapping } from "../lib/whatsappPlaceholders";
+import { recomputeInactiveCustomers } from "../lib/customerSegmentation";
 
 function applyTemplate(template: string, name: string): string {
   return template.replace(/\{\{\s*name\s*\}\}/gi, name);
@@ -32,10 +33,14 @@ export async function processWhatsAppBroadcast(content: {
   templateLanguage: string | null;
   placeholderConfig: string | null;
 }) {
+  // Marketing requires explicit opt-in, for individual and segment audiences.
+  // Recheck below immediately before every send; this snapshot is not authority.
   const recipients = content.targetCustomerId
-    ? await prisma.customer.findMany({ where: { id: content.targetCustomerId, tenantId: content.tenantId } }) // tenant-scoped
+    ? await prisma.customer.findMany({
+        where: { id: content.targetCustomerId, tenantId: content.tenantId, consentStatus: "OPTED_IN" }, // tenant-scoped
+      })
     : await prisma.customer.findMany({
-        where: { tenantId: content.tenantId, segment: content.targetSegment ?? undefined }, // tenant-scoped
+        where: { tenantId: content.tenantId, segment: content.targetSegment ?? undefined, consentStatus: "OPTED_IN" }, // tenant-scoped
       });
 
   if (recipients.length === 0) {
@@ -53,7 +58,8 @@ export async function processWhatsAppBroadcast(content: {
   // many as do fit rather than either silently over-sending or dropping
   // the whole broadcast.
   const usageCheck = await checkUsageLimit(content.tenantId, "WHATSAPP_MESSAGES", recipients.length);
-  let sendable = recipients;
+  const sendable = recipients;
+  let sendBudget = recipients.length;
   let quotaNote: string | null = null;
 
   if (!usageCheck.allowed) {
@@ -75,8 +81,7 @@ export async function processWhatsAppBroadcast(content: {
       });
       return;
     }
-    sendable = recipients.slice(0, remaining);
-    quotaNote = `Sent to ${sendable.length} of ${recipients.length} recipients — monthly WhatsApp message limit reached partway through.`;
+    sendBudget = remaining;
   }
 
   // placeholderConfig is only ever non-null in template mode (see
@@ -86,8 +91,14 @@ export async function processWhatsAppBroadcast(content: {
   const placeholders: PlaceholderMapping[] = content.placeholderConfig ? JSON.parse(content.placeholderConfig) : [];
   const skipped: { customerId: string; field: string }[] = [];
   let sentCount = 0;
+  let consentSkipped = 0;
+  const deliveryFailures: string[] = [];
 
   for (const customer of sendable) {
+    if (sentCount >= sendBudget) {
+      quotaNote = `Sent to ${sentCount} of ${recipients.length} recipients — monthly WhatsApp message limit reached partway through.`;
+      break;
+    }
     // JIT-decrypt right before the send, one customer at a time — never
     // batch-decrypt the recipient list up front. Logged as a system action
     // (actorId null: this runs off the cron scheduler, not a user request).
@@ -100,6 +111,7 @@ export async function processWhatsAppBroadcast(content: {
       reason: "broadcast_send",
     });
 
+    let bodyParams: string[] | undefined;
     if (content.templateName && content.templateLanguage) {
       const resolved = resolvePlaceholders(placeholders, {
         name: customer.name,
@@ -118,24 +130,46 @@ export async function processWhatsAppBroadcast(content: {
         );
         continue;
       }
-      await sendWhatsAppTemplateMessage(
+      bodyParams = resolved.params.length > 0 ? resolved.params : undefined;
+    }
+    // Indexed identity lookup, one small read per attempted recipient. Never
+    // trust the audience snapshot if the customer was deleted or opted out.
+    const current = await prisma.customer.findFirst({
+      where: { id: customer.id, tenantId: content.tenantId },
+      select: { consentStatus: true },
+    });
+    if (current?.consentStatus !== "OPTED_IN") {
+      consentSkipped++;
+      continue;
+    }
+    let result: WhatsAppResult;
+    if (content.templateName && content.templateLanguage) {
+      result = await sendWhatsAppTemplateMessage(
         content.tenantId,
         phone,
         content.templateName,
         content.templateLanguage,
-        resolved.params.length > 0 ? resolved.params : undefined
+        bodyParams
       );
     } else {
-      await sendWhatsAppMessage(content.tenantId, phone, applyTemplate(content.caption ?? "", customer.name));
+      result = await sendWhatsAppMessage(content.tenantId, phone, applyTemplate(content.caption ?? "", customer.name));
+    }
+    // 'delivered' means API-accepted in this adapter, not a read/delivery receipt.
+    if (result.mode !== "live" || !result.delivered) {
+      deliveryFailures.push(result.error ?? "WhatsApp send was not delivered (mock or unsuccessful)");
+      continue;
     }
     sentCount++;
+    // Persist each accepted send so a later recipient failure cannot erase usage.
+    await incrementUsage(content.tenantId, "WHATSAPP_MESSAGES", 1);
   }
   // Only actually-sent messages count against the plan's monthly budget —
   // a recipient skipped for missing data was never sent, so it shouldn't
   // consume quota either.
-  await incrementUsage(content.tenantId, "WHATSAPP_MESSAGES", sentCount);
 
   const notes: string[] = [];
+  if (consentSkipped) notes.push(`${consentSkipped} recipients skipped: no current marketing opt-in`);
+  if (deliveryFailures.length) notes.push(`${deliveryFailures.length} sends unsuccessful: ${deliveryFailures[0]}`);
   if (quotaNote) notes.push(quotaNote);
   if (skipped.length > 0) {
     const byField = new Map<string, number>();
@@ -213,6 +247,18 @@ export function startScheduler(): void {
           data: { status: "failed", errorMessage: err instanceof Error ? err.message : "Unknown error" },
         });
       }
+    }
+  });
+
+  // Once daily (03:00 UTC) — inactivity status doesn't need minute-level
+  // freshness like broadcast dispatch does, and re-tagging every customer
+  // on every tenant is real query volume worth keeping off the per-minute
+  // loop above. See lib/customerSegmentation.ts for the actual logic.
+  cron.schedule("0 3 * * *", async () => {
+    try {
+      await recomputeInactiveCustomers();
+    } catch (err) {
+      console.error("[scheduler] recomputeInactiveCustomers failed:", err);
     }
   });
 }

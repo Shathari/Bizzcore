@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { publicInquiryRateLimiter } from "../middleware/rateLimit";
-import { hashForLookup, normalizePhone } from "../lib/piiCrypto";
+import { phoneLookupHashes } from "../lib/piiCrypto";
 
 // Public, unauthenticated — this is what a tenant's own external website
 // (their real storefront; see lib/featureCatalog.ts's header comment on
@@ -61,9 +61,9 @@ router.post("/:tenantId", publicInquiryRateLimiter, async (req, res) => {
   // anything and never creates/edits a Customer row itself.
   let customerId: string | null = null;
   if (d.contactPhone) {
-    const phoneHash = hashForLookup(normalizePhone(d.contactPhone));
+    const phoneHashes = phoneLookupHashes(d.contactPhone);
     const match = await prisma.customer.findFirst({
-      where: { tenantId: tenant.id, phoneHash },
+      where: { tenantId: tenant.id, phoneHash: { in: phoneHashes } },
       select: { id: true },
     });
     customerId = match?.id ?? null;

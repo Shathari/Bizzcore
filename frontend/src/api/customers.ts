@@ -9,6 +9,8 @@ export type Segment = string;
 // phone/birthday are never part of this type — the API never sends them.
 // phoneMasked is a display-safe hint; hasBirthday only says whether one is
 // on file. Use revealCustomerField() to decrypt a specific field on demand.
+export type ConsentStatus = "UNKNOWN" | "OPTED_IN" | "OPTED_OUT";
+
 export type Customer = {
   id: string;
   name: string;
@@ -19,10 +21,11 @@ export type Customer = {
   totalSpent: number;
   lastPurchase: string | null;
   notes: string | null;
+  consentStatus: ConsentStatus;
   createdAt: string;
 };
 
-export async function listCustomers(params?: { search?: string; segment?: Segment }): Promise<Customer[]> {
+export async function listCustomers(params?: { search?: string; segment?: Segment; consentStatus?: ConsentStatus }): Promise<Customer[]> {
   const { data } = await apiClient.get<Customer[]>("/customers", { params });
   return data;
 }
@@ -41,6 +44,8 @@ export async function createCustomer(input: {
   totalSpent?: number;
   lastPurchase?: string;
   notes?: string;
+  // Absent = Skip (leave as Unknown) — see backend's createCustomerSchema.
+  consentChoice?: "OPT_IN" | "OPT_OUT";
 }): Promise<Customer> {
   const { data } = await apiClient.post<Customer>("/customers", input);
   return data;

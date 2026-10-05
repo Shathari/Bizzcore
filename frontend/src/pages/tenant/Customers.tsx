@@ -14,6 +14,7 @@ import {
   type Segment,
   type PiiField,
   type AccessLogEntry,
+  type ConsentStatus,
 } from "../../api/customers";
 import { listCustomerCategories, type CustomerCategory } from "../../api/customerCategories";
 import { useToast } from "../../components/Toast";
@@ -47,12 +48,29 @@ function SegmentBadge({ segment, isPriority }: { segment: Segment; isPriority: b
   return <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${className}`}>{segment}</span>;
 }
 
+const CONSENT_LABELS: Record<ConsentStatus, string> = {
+  OPTED_IN: "Opted In",
+  OPTED_OUT: "Opted Out",
+  UNKNOWN: "Unknown",
+};
+
+const CONSENT_STYLES: Record<ConsentStatus, string> = {
+  OPTED_IN: "bg-green-100 text-green-700",
+  OPTED_OUT: "bg-red-100 text-red-700",
+  UNKNOWN: "bg-neutral-100 text-neutral-500",
+};
+
+function ConsentBadge({ status }: { status: ConsentStatus }) {
+  return <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${CONSENT_STYLES[status]}`}>{CONSENT_LABELS[status]}</span>;
+}
+
 export default function Customers() {
   const { showToast } = useToast();
   const [customers, setCustomers] = useState<Customer[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [segmentFilter, setSegmentFilter] = useState<Segment | "">("");
+  const [consentFilter, setConsentFilter] = useState<ConsentStatus | "">("");
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Customer | null>(null);
@@ -65,7 +83,7 @@ export default function Customers() {
 
   const priorityNames = new Set(categories.filter((c) => c.isPriority).map((c) => c.name));
 
-  async function load(params?: { search?: string; segment?: Segment }) {
+  async function load(params?: { search?: string; segment?: Segment; consentStatus?: ConsentStatus }) {
     try {
       const data = await listCustomers(params);
       setCustomers(data);
@@ -83,6 +101,10 @@ export default function Customers() {
     }
   }
 
+  function currentFilters() {
+    return { search: search || undefined, segment: segmentFilter || undefined, consentStatus: consentFilter || undefined };
+  }
+
   useEffect(() => {
     load();
     loadCategories();
@@ -90,10 +112,10 @@ export default function Customers() {
 
   useEffect(() => {
     const handle = setTimeout(() => {
-      load({ search: search || undefined, segment: segmentFilter || undefined });
+      load(currentFilters());
     }, 300);
     return () => clearTimeout(handle);
-  }, [search, segmentFilter]);
+  }, [search, segmentFilter, consentFilter]);
 
   async function handleDelete() {
     if (!deleteTarget) return;
@@ -102,7 +124,7 @@ export default function Customers() {
       await deleteCustomer(deleteTarget.id);
       showToast(`${deleteTarget.name} deleted`);
       setDeleteTarget(null);
-      await load({ search: search || undefined, segment: segmentFilter || undefined });
+      await load(currentFilters());
     } catch {
       showToast("Could not delete customer.", "error");
     } finally {
@@ -181,6 +203,16 @@ export default function Customers() {
             </option>
           ))}
         </select>
+        <select
+          value={consentFilter}
+          onChange={(e) => setConsentFilter(e.target.value as ConsentStatus | "")}
+          className="rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+        >
+          <option value="">All consent</option>
+          <option value="OPTED_IN">Opted In</option>
+          <option value="OPTED_OUT">Opted Out</option>
+          <option value="UNKNOWN">Unknown</option>
+        </select>
       </div>
 
       {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
@@ -192,6 +224,7 @@ export default function Customers() {
               <Th>Name</Th>
               <Th>Phone</Th>
               <Th>Segment</Th>
+              <Th>Consent</Th>
               <Th>Total Spent</Th>
               <Th>Last Purchase</Th>
               <Th></Th>
@@ -200,14 +233,14 @@ export default function Customers() {
           <TableBody>
             {customers === null && (
               <TableRow>
-                <Td colSpan={6} className="text-center text-neutral-400">
+                <Td colSpan={7} className="text-center text-neutral-400">
                   Loading…
                 </Td>
               </TableRow>
             )}
             {customers?.length === 0 && (
               <TableRow>
-                <Td colSpan={6} className="text-center text-neutral-400">
+                <Td colSpan={7} className="text-center text-neutral-400">
                   No customers found.
                 </Td>
               </TableRow>
@@ -218,6 +251,9 @@ export default function Customers() {
                 <Td className="text-neutral-600">{c.phoneMasked}</Td>
                 <Td>
                   <SegmentBadge segment={c.segment} isPriority={priorityNames.has(c.segment)} />
+                </Td>
+                <Td>
+                  <ConsentBadge status={c.consentStatus} />
                 </Td>
                 <Td className="text-neutral-600">{formatCurrency(c.totalSpent)}</Td>
                 <Td className="text-neutral-600">{formatDate(c.lastPurchase)}</Td>
@@ -245,14 +281,14 @@ export default function Customers() {
         onClose={() => setAddOpen(false)}
         onCreated={() => {
           setAddOpen(false);
-          load({ search: search || undefined, segment: segmentFilter || undefined });
+          load(currentFilters());
         }}
       />
 
       <ImportCustomersModal
         open={importOpen}
         onClose={() => setImportOpen(false)}
-        onImported={() => load({ search: search || undefined, segment: segmentFilter || undefined })}
+        onImported={() => load(currentFilters())}
       />
 
       <CustomerDetailModal customer={detailTarget} isPriority={detailTarget ? priorityNames.has(detailTarget.segment) : false} onClose={() => setDetailTarget(null)} />
@@ -307,6 +343,10 @@ function AddCustomerModal({
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [segment, setSegment] = useState<Segment>("Regular");
+  // "" (Skip) is the default — leaves consentStatus at Unknown and writes no
+  // ConsentEvent at all. Only Opt-in/Opt-out record that staff actually
+  // asked and got an answer.
+  const [consentChoice, setConsentChoice] = useState<"" | "OPT_IN" | "OPT_OUT">("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -315,6 +355,7 @@ function AddCustomerModal({
     setPhone("");
     setEmail("");
     setSegment("Regular");
+    setConsentChoice("");
     setError(null);
     onClose();
   }
@@ -324,7 +365,7 @@ function AddCustomerModal({
     setError(null);
     setSubmitting(true);
     try {
-      await createCustomer({ name, phone, email: email || undefined, segment });
+      await createCustomer({ name, phone, email: email || undefined, segment, consentChoice: consentChoice || undefined });
       resetAndClose();
       onCreated();
     } catch (err) {
@@ -376,6 +417,19 @@ function AddCustomerModal({
                 {c.name}
               </option>
             ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-neutral-700">WhatsApp marketing consent</label>
+          <p className="mt-0.5 text-xs text-neutral-500">Only choose Opt-in or Opt-out if you actually asked the customer and got an answer.</p>
+          <select
+            value={consentChoice}
+            onChange={(e) => setConsentChoice(e.target.value as "" | "OPT_IN" | "OPT_OUT")}
+            className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm focus:border-maroon focus:outline-none focus:ring-1 focus:ring-maroon"
+          >
+            <option value="">Skip (leave as Unknown)</option>
+            <option value="OPT_IN">Opt-in — customer agreed to receive messages</option>
+            <option value="OPT_OUT">Opt-out — customer declined</option>
           </select>
         </div>
 

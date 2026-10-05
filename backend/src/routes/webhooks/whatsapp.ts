@@ -1,7 +1,10 @@
 import { Router } from "express";
 import crypto from "crypto";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { logger } from "../../lib/logger";
+import { phoneLookupHashes, normalizePhone } from "../../lib/piiCrypto";
+import { isOptOutMessage, recordConsentTransition } from "../../lib/consent";
 
 // Meta's WhatsApp Cloud API webhook — the "Callback URL" Meta's app
 // dashboard (WhatsApp > Configuration) requires before it'll let you finish
@@ -77,37 +80,84 @@ async function findTenantIdForPhoneNumberId(phoneNumberId: string): Promise<stri
   return cred?.tenantId ?? null;
 }
 
-async function processInboundMessage(tenantId: string, value: ChangeValue, message: InboundMessage) {
-  // Idempotency: Meta redelivers on anything other than a fast 2xx, and can
-  // send a genuine duplicate independent of that too. Check before writing.
-  const existing = await prisma.message.findFirst({
-    where: { tenantId, externalId: message.id },
-    select: { id: true },
+// Unconditional, server-side STOP/unsubscribe handling — runs on every
+// inbound text message regardless of what any campaign or route later tries
+// to do, per the consent model's whole point (see schema.prisma's
+// ConsentEvent comment). Best-effort phone match against Customer, same
+// limitation as routes/publicInquiries.ts's own auto-link: a WhatsApp
+// contact who has replied but was never saved as a Customer has no
+// consentStatus row to transition — harmless in practice, since every
+// broadcast recipient query (jobs/scheduler.ts) is Customer-model-driven
+// already, so a non-Customer phone number was never reachable by a
+// broadcast in the first place.
+async function maybeHandleOptOut(tenantId: string, from: string, body: string, tx: Prisma.TransactionClient): Promise<void> {
+  if (!isOptOutMessage(body)) return;
+
+  const customers = await tx.customer.findMany({
+    where: { tenantId, phoneHash: { in: phoneLookupHashes(from) } }, // tenant-scoped
+    select: { id: true, consentStatus: true },
   });
-  if (existing) return;
-
-  const contactName = value.contacts?.find((c) => c.wa_id === message.from)?.profile?.name ?? null;
-
-  const conversation = await prisma.conversation.upsert({
-    where: { tenantId_channel_contactHandle: { tenantId, channel: "WHATSAPP", contactHandle: message.from } },
-    create: { tenantId, channel: "WHATSAPP", contactHandle: message.from, contactName },
-    // Keep the existing contactName once one's been recorded (e.g. set by
-    // a future "start new conversation" flow) rather than letting a later
-    // inbound event with no profile name blank it out.
-    update: { contactName: contactName ?? undefined, lastMessageAt: new Date() },
-  });
-
-  await prisma.message.create({
-    data: {
+  // Phone hashes are indexed but not unique. Imports may have created more
+  // than one record for this number; none may remain eligible after STOP.
+  for (const customer of customers) {
+    await recordConsentTransition({
       tenantId,
-      conversationId: conversation.id,
-      direction: "INBOUND",
-      body: bodyFor(message),
-      status: "sent",
-      externalId: message.id,
-    },
-  });
-  await prisma.conversation.update({ where: { id: conversation.id }, data: { lastMessageAt: new Date() } });
+      customerId: customer.id,
+      previousState: customer.consentStatus as "UNKNOWN" | "OPTED_IN" | "OPTED_OUT",
+      newState: "OPTED_OUT",
+      source: "CUSTOMER_REPLY",
+    }, tx);
+  }
+}
+
+async function processInboundMessage(tenantId: string, value: ChangeValue, message: InboundMessage) {
+  // Consent, message persistence, and its idempotency marker commit together.
+  // A failure rolls back everything so Meta can retry the same WAMID; a
+  // successful duplicate returns before applying consent again.
+  await prisma.$transaction(async (tx) => {
+    // Idempotency: Meta redelivers on anything other than a fast 2xx, and can
+    // send a genuine duplicate independent of that too. Check before writing.
+    const existing = await tx.message.findFirst({
+      where: { tenantId, externalId: message.id },
+      select: { id: true },
+    });
+    if (existing) return;
+
+    if (message.type === "text" && message.text?.body) {
+      await maybeHandleOptOut(tenantId, message.from, message.text.body, tx);
+    }
+
+    const contactName = value.contacts?.find((c) => c.wa_id === message.from)?.profile?.name ?? null;
+
+    const canonicalHandle = normalizePhone(message.from);
+    const legacyConversation = await tx.conversation.findFirst({
+      where: { tenantId, channel: "WHATSAPP", contactHandle: { in: [canonicalHandle, `+${canonicalHandle}`] } },
+      select: { contactHandle: true },
+    });
+    const contactHandle = legacyConversation?.contactHandle ?? canonicalHandle;
+
+    const conversation = await tx.conversation.upsert({
+      where: { tenantId_channel_contactHandle: { tenantId, channel: "WHATSAPP", contactHandle } },
+      create: { tenantId, channel: "WHATSAPP", contactHandle, contactName },
+      // Keep the existing contactName once one's been recorded (e.g. set by
+      // a future "start new conversation" flow) rather than letting a later
+      // inbound event with no profile name blank it out.
+      update: { contactName: contactName ?? undefined, lastMessageAt: new Date() },
+    });
+
+    await tx.message.create({
+      data: {
+        tenantId,
+        conversationId: conversation.id,
+        direction: "INBOUND",
+        body: bodyFor(message),
+        status: "sent",
+        externalId: message.id,
+      },
+    });
+    await tx.conversation.update({ where: { id: conversation.id }, data: { lastMessageAt: new Date() } });
+
+  }, { isolationLevel: "Serializable" });
 }
 
 const VALID_STATUSES = new Set(["sent", "delivered", "read", "failed"]);

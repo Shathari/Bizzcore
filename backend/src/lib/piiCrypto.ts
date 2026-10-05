@@ -54,5 +54,15 @@ export function monthDayOf(date: Date): string {
 }
 
 export function normalizePhone(phone: string): string {
-  return phone.replace(/[^\d+]/g, "");
+  // Keep the project's country-code-as-entered convention: never infer a
+  // country or expand a local number. A leading international '+' is notation,
+  // not part of the phone identity; Meta supplies the same digits without it.
+  return phone.replace(/[^\d+]/g, "").replace(/^\+/, "");
+}
+
+// Existing rows may still carry the old hash including a leading '+'. Read
+// both representations without rewriting encrypted PII or migration history.
+export function phoneLookupHashes(phone: string): string[] {
+  const canonical = normalizePhone(phone);
+  return [...new Set([hashForLookup(canonical), hashForLookup(`+${canonical}`)])];
 }

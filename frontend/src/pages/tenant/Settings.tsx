@@ -1,12 +1,16 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import axios from "axios";
-import { CheckCircle2, Globe2, XCircle, Tag, Star, Trash2, Pencil, Check, X, MessageSquareText } from "lucide-react";
+import QRCode from "qrcode";
+import { CheckCircle2, Globe2, XCircle, Tag, Star, Trash2, Pencil, Check, X, MessageSquareText, QrCode } from "lucide-react";
 import {
   getIntegrations,
   saveMetaCredentials,
   disconnectMeta,
   saveWhatsAppCredentials,
   disconnectWhatsApp,
+  getConsentPageToken,
+  regenerateConsentPageToken,
+  revokeConsentPageToken,
   type MetaStatus,
   type WhatsAppStatus,
 } from "../../api/settings";
@@ -74,6 +78,10 @@ export default function Settings() {
 
       <div className="mt-6">
         <WhatsAppTemplatesCard whatsappStatus={whatsapp} />
+      </div>
+
+      <div className="mt-6">
+        <ConsentLinkCard />
       </div>
 
       <div className="mt-6">
@@ -420,6 +428,113 @@ function WhatsAppTemplatesCard({ whatsappStatus }: { whatsappStatus: WhatsAppSta
   );
 }
 
+// Channel 3 of the WhatsApp consent model — a printable QR code + link to
+// the public, unauthenticated self-service opt-in page (see
+// pages/public/ConsentPage.tsx). The token itself lives on Tenant
+// (backend's routes/settings.ts), not here; this just displays it and lets
+// staff regenerate it, which immediately invalidates any previously
+// printed copy (see that route's comment on why regenerate IS the revoke
+// mechanism).
+function ConsentLinkCard() {
+  const { showToast } = useToast();
+  const [token, setToken] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [regenerating, setRegenerating] = useState(false);
+  const [revoking, setRevoking] = useState(false);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  async function load() {
+    try {
+      setToken(await getConsentPageToken());
+    } catch {
+      showToast("Could not load consent link.", "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const consentUrl = token ? `${window.location.origin}/consent/${token}` : null;
+
+  useEffect(() => {
+    if (consentUrl && canvasRef.current) {
+      QRCode.toCanvas(canvasRef.current, consentUrl, { width: 180, margin: 1 }).catch(() => {
+        showToast("Could not render QR code.", "error");
+      });
+    }
+  }, [consentUrl, showToast]);
+
+  async function handleRegenerate() {
+    setRegenerating(true);
+    try {
+      setToken(await regenerateConsentPageToken());
+      showToast(token ? "Consent link regenerated — the old QR code no longer works." : "Consent link created.");
+    } catch {
+      showToast("Could not generate consent link.", "error");
+    } finally {
+      setRegenerating(false);
+    }
+  }
+
+  async function handleRevoke() {
+    setRevoking(true);
+    try {
+      await revokeConsentPageToken();
+      setToken(null);
+      showToast("Consent link revoked — the QR code no longer works, and no new link is active.");
+    } catch {
+      showToast("Could not revoke consent link.", "error");
+    } finally {
+      setRevoking(false);
+    }
+  }
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2">
+        <QrCode className="h-4 w-4 text-neutral-400" />
+        <h2 className="font-serif text-lg text-neutral-900">Customer consent link</h2>
+      </div>
+      <p className="mt-1 text-sm text-neutral-500">
+        A QR code and link customers can scan at your checkout counter to opt in or out of WhatsApp marketing
+        messages themselves — no login required on their end.
+      </p>
+
+      {!loading && (
+        <div className="mt-4 flex flex-wrap items-start gap-6">
+          {consentUrl && (
+            <div className="flex flex-col items-center gap-2">
+              <canvas ref={canvasRef} className="rounded-lg border border-neutral-200" />
+              <p className="max-w-[180px] break-all text-center text-xs text-neutral-500">{consentUrl}</p>
+            </div>
+          )}
+          <div className="flex flex-col items-start gap-2">
+            <div className="flex gap-2">
+              <Button variant="secondary" onClick={handleRegenerate} disabled={regenerating || revoking}>
+                {regenerating ? "Generating…" : token ? "Regenerate link" : "Generate consent link"}
+              </Button>
+              {token && (
+                <Button variant="danger" onClick={handleRevoke} disabled={regenerating || revoking}>
+                  {revoking ? "Revoking…" : "Revoke"}
+                </Button>
+              )}
+            </div>
+            {token && (
+              <p className="text-xs text-neutral-400">
+                Regenerate replaces the link immediately. Revoke turns it off with no replacement until you generate a
+                new one.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function NewTemplateModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState<(typeof TEMPLATE_CATEGORY_OPTIONS)[number]>("UTILITY");
@@ -508,6 +623,13 @@ function NewTemplateModal({ open, onClose, onCreated }: { open: boolean; onClose
           <p className="mt-1 text-xs text-neutral-400">
             Use {"{{1}}"}, {"{{2}}"}, … for variables filled in at send time.
           </p>
+          {category === "MARKETING" && (
+            <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Marketing templates used for broadcasts should let customers opt out — consider adding something like
+              "Reply STOP to opt out" to the body or footer. This isn't required to submit (Meta's own review is the
+              real gate), just a reminder.
+            </p>
+          )}
         </div>
 
         {error && (

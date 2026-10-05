@@ -98,6 +98,23 @@ export const publicInquiryRateLimiter = rateLimit({
   },
 });
 
+// Public, unauthenticated self-service consent submission (see
+// routes/publicConsent.ts) — same shape and reasoning as
+// publicInquiryRateLimiter above (this guards against someone scripting
+// opt-in/opt-out spam or walking phone numbers against one tenant's link,
+// not a PII-exposure risk), just keyed on the consent-page token instead of
+// a tenantId path param.
+export const publicConsentRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `${req.params.token ?? "unknown"}:${req.ip ?? "unknown"}`,
+  handler: (_req, res) => {
+    res.status(429).json({ ok: false, error: "Too many requests. Please try again later." });
+  },
+});
+
 // Caps how often WE hit a given tenant's external site — test/discover-
 // schema/sync/import all make real outbound calls to whatever a tenant
 // configured as their connector, so this is keyed on tenantId (not the

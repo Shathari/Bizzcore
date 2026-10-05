@@ -8,9 +8,10 @@ import { resolveTenant } from "../middleware/resolveTenant";
 import { authorize } from "../middleware/authorize";
 import { requirePasswordSet } from "../middleware/requirePasswordSet";
 import { revealRateLimiter, bulkExportRateLimiter } from "../middleware/rateLimit";
-import { encryptField, decryptField, maskPhone, hashForLookup, monthDayOf, normalizePhone } from "../lib/piiCrypto";
+import { encryptField, decryptField, maskPhone, hashForLookup, monthDayOf, normalizePhone, phoneLookupHashes } from "../lib/piiCrypto";
 import { logAccess, logBulkAccess, listAccessLogForCustomer, type PiiField } from "../lib/accessLog";
 import { isValidCategory, listCategoryNames } from "../lib/customerCategories";
+import { recordConsentTransition } from "../lib/consent";
 
 const router = Router();
 
@@ -38,6 +39,7 @@ const SAFE_CUSTOMER_SELECT = {
   totalSpent: true,
   lastPurchase: true,
   notes: true,
+  consentStatus: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -57,16 +59,18 @@ const listQuerySchema = z.object({
   // it. Contrast with create/import below, where an invalid segment would
   // otherwise get silently persisted.
   segment: z.string().trim().min(1).optional(),
+  consentStatus: z.enum(["UNKNOWN", "OPTED_IN", "OPTED_OUT"]).optional(),
 });
 
 router.get("/", async (req, res) => {
   const parsed = listQuerySchema.safeParse(req.query);
-  const { search, segment } = parsed.success ? parsed.data : {};
+  const { search, segment, consentStatus } = parsed.success ? parsed.data : {};
 
   const customers = await prisma.customer.findMany({
     where: {
       tenantId: req.tenantId, // tenant-scoped
       ...(segment ? { segment } : {}),
+      ...(consentStatus ? { consentStatus } : {}),
     },
     select: SAFE_CUSTOMER_SELECT,
     orderBy: { createdAt: "desc" },
@@ -79,13 +83,13 @@ router.get("/", async (req, res) => {
   // (the search box holding a full phone number) still works via phoneHash,
   // without ever decrypting a row just to check if it matches.
   const needle = search?.toLowerCase();
-  const phoneHashSearch = search && normalizePhone(search).length >= 6 ? hashForLookup(normalizePhone(search)) : null;
+  const phoneHashSearch = search && normalizePhone(search).length >= 6 ? phoneLookupHashes(search) : [];
   const filtered = needle
     ? customers.filter(
         (c) =>
           c.name.toLowerCase().includes(needle) ||
           (c.email?.toLowerCase().includes(needle) ?? false) ||
-          (phoneHashSearch !== null && c.phoneHash === phoneHashSearch)
+          phoneHashSearch.includes(c.phoneHash)
       )
     : customers;
 
@@ -300,6 +304,11 @@ const createCustomerSchema = z.object({
   totalSpent: z.number().nonnegative().optional(),
   lastPurchase: z.string().optional(),
   notes: z.string().optional(),
+  // Absent = "Skip" — leaves consentStatus at its default (UNKNOWN) and
+  // writes no ConsentEvent at all, per the explicit "Skip must not silently
+  // write an event or change state" requirement. Only present when staff
+  // actually asked the customer and recorded an answer.
+  consentChoice: z.enum(["OPT_IN", "OPT_OUT"]).optional(),
 });
 
 router.post("/", async (req, res) => {
@@ -337,6 +346,26 @@ router.post("/", async (req, res) => {
     },
     select: SAFE_CUSTOMER_SELECT,
   });
+
+  // Staff/owner directly asking the customer and recording their answer —
+  // source: STAFF_ACTION distinguishes this in ConsentEvent's audit trail
+  // from the customer's own action (a STOP reply, or the future
+  // self-service consent page), which matters if consent is ever disputed.
+  // customer.consentStatus is still "UNKNOWN" here (the just-created row's
+  // schema default) regardless of consentChoice, since the transition
+  // itself (and its ConsentEvent) only happens in the call below.
+  if (d.consentChoice) {
+    const newState = d.consentChoice === "OPT_IN" ? "OPTED_IN" : "OPTED_OUT";
+    await recordConsentTransition({
+      tenantId: req.tenantId!,
+      customerId: customer.id,
+      previousState: "UNKNOWN",
+      newState,
+      source: "STAFF_ACTION",
+      actorId: req.user!.id,
+    });
+    customer.consentStatus = newState;
+  }
 
   res.status(201).json(toSafeCustomer(customer));
 });

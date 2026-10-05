@@ -51,6 +51,20 @@ const FEATURE_ROWS: FeatureRow[] = [
   { featureKey: "SMS", category: "COMMUNICATION", displayName: "SMS", valueType: "NUMERIC", unit: "/mo", cells: ["100", "500", "2000", "10000"] },
   { featureKey: "PUSH_NOTIFICATIONS", category: "COMMUNICATION", displayName: "Push Notifications", valueType: "NUMERIC", unit: "/mo", cells: ["❌", "2000", "20000", "unlimited"] },
 
+  // --- Modules --------------------------------------------------------------
+  //
+  // A "module" (see lib/modules.ts) is a top-level product surface that's
+  // either on or off for a tenant, independent of any single feature's own
+  // quantity/tier — modeled as one dedicated BOOLEAN FeatureCatalog row
+  // whose featureKey equals its category, rather than a new table, so the
+  // existing Plan/PlanFeature editor and TenantFeatureOverride (per-tenant
+  // override, independent of plan) both work on module activation for free.
+  // Included on every plan by default since WhatsApp messaging itself
+  // (WHATSAPP_MESSAGES above) already is — flagged as a decision, not a
+  // given, in the chat summary; restrict per-plan later via the Super Admin
+  // Plans UI if repeat-sales should be gated to higher tiers.
+  { featureKey: "WHATSAPP_REPEAT_SALES", category: "WHATSAPP_REPEAT_SALES", displayName: "WhatsApp Repeat Customer Sales", valueType: "BOOLEAN", unit: null, cells: ["✅", "✅", "✅", "✅"] },
+
   // --- Website ------------------------------------------------------------
   { featureKey: "WEBSITE_INCLUDED", category: "WEBSITE", displayName: "Website Included", valueType: "TIER", unit: null, cells: ["❌", "Basic", "Dynamic", "Premium"] },
   { featureKey: "CUSTOM_DOMAIN", category: "WEBSITE", displayName: "Custom Domain", valueType: "BOOLEAN", unit: null, cells: ["❌", "✅", "✅", "✅"] },

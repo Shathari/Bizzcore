@@ -5,6 +5,7 @@ import { resolveTenant } from "../middleware/resolveTenant";
 import { authorize } from "../middleware/authorize";
 import { requirePasswordSet } from "../middleware/requirePasswordSet";
 import { listPriorityCategoryNames } from "../lib/customerCategories";
+import { getActiveModules } from "../lib/modules";
 
 const router = Router();
 router.use(authenticate, requirePasswordSet, resolveTenant, authorize("ADMIN"));
@@ -38,6 +39,7 @@ router.get("/summary", async (req, res) => {
   trendStart.setHours(0, 0, 0, 0);
 
   const priorityCategoryNames = await listPriorityCategoryNames(tenantId);
+  const modules = await getActiveModules(tenantId);
 
   const [todaysInquiries, websiteVisitorsToday, newCustomersToday, followUpCandidates, purchases] =
     await Promise.all([
@@ -84,6 +86,7 @@ router.get("/summary", async (req, res) => {
   const revenueTrend = buckets.map((b) => ({ month: b.label, revenue: totals.get(b.key) ?? 0 }));
 
   res.json({
+    modules,
     todaysInquiries,
     websiteVisitorsToday,
     newCustomersToday,

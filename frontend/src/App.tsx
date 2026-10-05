@@ -11,6 +11,7 @@ import DataDeletion from "./pages/DataDeletion";
 import Terms from "./pages/Terms";
 import Security from "./pages/Security";
 import Status from "./pages/Status";
+import ConsentPage from "./pages/public/ConsentPage";
 import Login from "./pages/tenant/Login";
 import ForgotPassword from "./pages/tenant/ForgotPassword";
 import ResetPassword from "./pages/tenant/ResetPassword";
@@ -56,6 +57,7 @@ export default function App() {
             <Route path="/terms" element={<Terms />} />
             <Route path="/security" element={<Security />} />
             <Route path="/status" element={<Status />} />
+            <Route path="/consent/:token" element={<ConsentPage />} />
             <Route path="/login" element={<Login />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />

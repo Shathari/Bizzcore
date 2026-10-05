@@ -41,6 +41,7 @@ import connectorConfigRoutes from "./routes/connectorConfig";
 import inquiryRoutes from "./routes/inquiries";
 import publicInquiriesRoutes from "./routes/publicInquiries";
 import customerCategoryRoutes from "./routes/customerCategories";
+import publicConsentRoutes from "./routes/publicConsent";
 
 // Builds and configures the Express app with no side effects (no
 // app.listen, no cron scheduler) so it can be imported directly by tests
@@ -132,6 +133,10 @@ export function createApp() {
   // routes/publicInquiries.ts's file comment); not mounted under /api/mock-
   // external-site since it's a real endpoint tenants embed, not a demo stand-in.
   app.use("/api/public/inquiries", publicInquiriesRoutes);
+  // Public, unauthenticated self-service consent page (Channel 3 of the
+  // WhatsApp Repeat Customer Sales consent model) — see
+  // routes/publicConsent.ts's file comment for the token trust model.
+  app.use("/api/public/consent", publicConsentRoutes);
   app.use("/api/mock-external-site", mockExternalSiteRoutes);
   // Local dev/demo reference implementation of the standardized media-sync
   // upload contract every tenant destination site now implements — see
