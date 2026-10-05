@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
+import { passwordSchema } from "../lib/password";
 import { prisma } from "../lib/prisma";
 import { sendEmail } from "../integrations/email";
 import { forgotPasswordRateLimiter, resetPasswordRateLimiter } from "../middleware/rateLimit";
@@ -73,7 +74,7 @@ router.post("/forgot-password", forgotPasswordRateLimiter, async (req, res) => {
 
 const resetSchema = z.object({
   token: z.string().trim().min(1, "Reset token is required"),
-  newPassword: z.string().min(8, "New password must be at least 8 characters"),
+  newPassword: passwordSchema,
 });
 
 router.post("/reset-password", resetPasswordRateLimiter, async (req, res) => {
@@ -94,7 +95,7 @@ router.post("/reset-password", resetPasswordRateLimiter, async (req, res) => {
   await prisma.$transaction([
     prisma.user.update({
       where: { id: record.userId },
-      data: { passwordHash, mustChangePassword: false },
+      data: { passwordHash, mustChangePassword: false, authVersion: { increment: 1 } },
     }),
     prisma.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: new Date() } }),
     // Redeeming one link invalidates every other outstanding link for the

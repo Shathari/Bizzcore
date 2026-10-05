@@ -69,7 +69,7 @@ function ConsentBadge({ status }: { status: ConsentStatus }) {
 
 export default function Customers() {
   const { user } = useAuth();
-  return user?.role === "EMPLOYEE" ? <div className="px-4 py-6 sm:px-8"><h1 className="mb-4 font-serif text-2xl">Customers</h1><Card><SaleEntry /></Card></div> : <AdminCustomers />;
+  return user?.role === "EMPLOYEE" ? <div className="px-4 py-6 sm:px-8"><h1 className="mb-4 font-serif text-2xl">Record Sale</h1><Card><SaleEntry /></Card></div> : <AdminCustomers />;
 }
 
 function AdminCustomers() {
@@ -80,6 +80,7 @@ function AdminCustomers() {
   const [segmentFilter, setSegmentFilter] = useState<Segment | "">("");
   const [consentFilter, setConsentFilter] = useState<ConsentStatus | "">("");
   const [addOpen, setAddOpen] = useState(false);
+  const [saleOpen, setSaleOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Customer | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -187,6 +188,7 @@ function AdminCustomers() {
               <Download className="h-4 w-4" /> Export with contact info
             </span>
           </Button>
+          <Button onClick={() => setSaleOpen(true)}>Record Sale</Button>
           <Button onClick={() => setAddOpen(true)}>+ Add Customer</Button>
         </div>
       </div>
@@ -299,6 +301,7 @@ function AdminCustomers() {
         onImported={() => load(currentFilters())}
       />
 
+      <Modal open={saleOpen} onClose={() => setSaleOpen(false)} title="Record Sale"><SaleEntry onRecorded={() => load(currentFilters())} /></Modal>
       <CustomerDetailModal customer={detailTarget} isPriority={detailTarget ? priorityNames.has(detailTarget.segment) : false} onClose={() => setDetailTarget(null)} onRecorded={() => {
         load(currentFilters());
         if (detailTarget) getCustomer(detailTarget.id).then(setDetailTarget).catch(() => showToast("Sale saved; reopen customer to refresh details.", "error"));

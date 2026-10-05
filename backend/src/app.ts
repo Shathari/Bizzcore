@@ -12,11 +12,13 @@ import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
+import { requestLoggingOptions } from "./lib/requestLogging";
 import { logger } from "./lib/logger";
 import authRoutes from "./routes/auth";
 import passwordResetRoutes from "./routes/passwordReset";
 import customerRoutes from "./routes/customers";
 import purchaseRoutes from "./routes/purchases";
+import employeeRoutes from "./routes/employees";
 import superAdminRoutes from "./routes/super-admin";
 import dashboardRoutes from "./routes/dashboard";
 import communicationRoutes from "./routes/communication";
@@ -77,7 +79,7 @@ export function createApp() {
   app.use(express.json());
   app.use(cookieParser());
   if (process.env.NODE_ENV !== "test") {
-    app.use(pinoHttp());
+    app.use(pinoHttp(requestLoggingOptions));
   }
 
   app.get("/api/health", (_req, res) => {
@@ -100,6 +102,7 @@ export function createApp() {
   app.use("/api/auth", passwordResetRoutes);
   app.use("/api/customers", customerRoutes);
   app.use("/api/purchases", purchaseRoutes);
+  app.use("/api/employees", employeeRoutes);
   app.use("/api/customer-categories", customerCategoryRoutes);
   app.use("/api/super-admin", superAdminRoutes);
   app.use("/api/dashboard", dashboardRoutes);

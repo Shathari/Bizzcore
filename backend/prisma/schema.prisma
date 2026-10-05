@@ -137,6 +137,8 @@ model User {
   passwordHash       String
   role               String    @default("ADMIN") // SUPER_ADMIN | ADMIN | EMPLOYEE
   mustChangePassword Boolean   @default(false)
+  disabledAt         DateTime?
+  authVersion        Int       @default(0)
   lastLoginAt        DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt

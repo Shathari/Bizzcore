@@ -18,7 +18,10 @@ const NAV_ITEMS = [
 
 function NavList({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth();
-  const items = user?.role === "EMPLOYEE" ? NAV_ITEMS.filter((item) => item.to === "/dashboard/customers") : NAV_ITEMS;
+  const items = user?.role === "EMPLOYEE" ? [
+    { to: "/dashboard/customers", label: "Record Sale", icon: Users, end: false },
+    { to: "/change-password", label: "Change Password", icon: SettingsIcon, end: false },
+  ] : NAV_ITEMS;
   return (
     <nav className="mt-4 flex-1 space-y-1 px-3">
       {items.map(({ to, label, icon: Icon, end }) => (

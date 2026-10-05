@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
+import { passwordSchema } from "../lib/password";
 import { prisma } from "../lib/prisma";
 import { signAuthToken } from "../lib/jwt";
 import { authenticate } from "../middleware/auth";
@@ -60,6 +61,10 @@ router.post("/login", loginRateLimiter, async (req, res) => {
     return;
   }
 
+  if (user.role === "EMPLOYEE" && user.disabledAt) {
+    res.status(403).json({ error: "Employee access is unavailable" }); return;
+  }
+
   // Generic "invalid credentials" rather than a distinct "deleted" message —
   // unlike Suspended (a recoverable state a legitimate admin should be told
   // to contact support about), a deleted business shouldn't confirm to an
@@ -79,6 +84,7 @@ router.post("/login", loginRateLimiter, async (req, res) => {
     role: user.role as Role,
     tenantId: user.tenantId,
     mustChangePassword: user.mustChangePassword,
+    authVersion: user.authVersion,
   });
 
   res.cookie(COOKIE_NAME, token, sessionCookieOptions("none"));
@@ -120,7 +126,7 @@ router.get("/me", authenticate, async (req, res) => {
 
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(1),
-  newPassword: z.string().min(8, "New password must be at least 8 characters"),
+  newPassword: passwordSchema,
 });
 
 router.post("/change-password", authenticate, async (req, res) => {
@@ -144,9 +150,9 @@ router.post("/change-password", authenticate, async (req, res) => {
   }
 
   const newHash = await bcrypt.hash(newPassword, 10);
-  await prisma.user.update({
+  const updated = await prisma.user.update({
     where: { id: user.id },
-    data: { passwordHash: newHash, mustChangePassword: false },
+    data: { passwordHash: newHash, mustChangePassword: false, authVersion: { increment: 1 } },
   });
 
   // Reissue the session cookie so mustChangePassword: false takes effect
@@ -156,6 +162,7 @@ router.post("/change-password", authenticate, async (req, res) => {
     role: user.role as Role,
     tenantId: user.tenantId,
     mustChangePassword: false,
+    authVersion: updated.authVersion,
   });
   res.cookie(COOKIE_NAME, token, sessionCookieOptions("lax"));
 

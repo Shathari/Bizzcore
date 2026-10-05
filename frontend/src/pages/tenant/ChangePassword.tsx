@@ -23,7 +23,7 @@ export default function ChangePassword() {
   }
   // Nothing forcing this screen — send them where they belong instead of
   // letting a stale bookmark/URL land here unnecessarily.
-  if (!user.mustChangePassword) {
+  if (!user.mustChangePassword && user.role !== "EMPLOYEE") {
     return <Navigate to={user.role === "SUPER_ADMIN" ? "/super-admin" : "/"} replace />;
   }
 
@@ -71,13 +71,13 @@ export default function ChangePassword() {
         <h1 className="mt-6 font-serif text-2xl text-neutral-900">Set a new password</h1>
         <p className="mt-1 text-sm text-neutral-500">
           {user.name ? `Welcome, ${user.name}. ` : ""}
-          For security, choose a new password before continuing.
+          {user.mustChangePassword ? "For security, choose a new password before continuing." : "Enter your current password to choose a new one."}
         </p>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <PasswordField
             id="currentPassword"
-            label="Temporary password"
+            label={user.mustChangePassword ? "Temporary password" : "Current password"}
             value={currentPassword}
             onChange={setCurrentPassword}
             autoComplete="current-password"

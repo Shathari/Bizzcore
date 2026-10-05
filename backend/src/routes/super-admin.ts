@@ -519,7 +519,7 @@ router.post("/businesses/:id/resend-credentials", async (req, res) => {
   const passwordHash = await bcrypt.hash(tempPassword, 10);
   await prisma.user.update({
     where: { id: admin.id },
-    data: { passwordHash, mustChangePassword: true },
+    data: { passwordHash, mustChangePassword: true, authVersion: { increment: 1 } },
   });
 
   const delivery = await deliverCredentials(tenant, admin, tempPassword);

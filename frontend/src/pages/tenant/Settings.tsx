@@ -31,6 +31,7 @@ import { Modal } from "../../components/Modal";
 import { WebsiteModulesPanel } from "../../components/WebsiteModulesPanel";
 import { WebsiteIntegrationsPanel } from "../../components/WebsiteIntegrationsPanel";
 import { ConnectorLoginPanel } from "../../components/ConnectorLoginPanel";
+import { EmployeesPanel } from "../../components/EmployeesPanel";
 
 function StatusBadge({ connected }: { connected: boolean }) {
   return connected ? (
@@ -66,6 +67,7 @@ export default function Settings() {
   return (
     <div className="px-4 py-6 sm:px-8 sm:py-8">
       <h1 className="font-serif text-2xl text-neutral-900">Settings</h1>
+      <EmployeesPanel />
       <p className="mt-1 text-sm text-neutral-500">
         Connect your Meta (Instagram &amp; Facebook) and WhatsApp Business accounts so Communication Center and
         Social Media Manager can send for real instead of running in mock mode.

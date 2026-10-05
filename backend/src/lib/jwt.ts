@@ -6,6 +6,7 @@ export type JwtPayload = {
   role: Role;
   tenantId: string | null;
   mustChangePassword: boolean;
+  authVersion?: number; // Missing on pre-version tokens; accepted only at database version 0.
 };
 
 // Checked lazily (per call) rather than at module-import time. Practically
@@ -23,7 +24,7 @@ function getSecret(): string {
 }
 
 export function signAuthToken(payload: JwtPayload): string {
-  return jwt.sign(payload, getSecret(), {
+  return jwt.sign({ ...payload, authVersion: payload.authVersion ?? 0 }, getSecret(), {
     expiresIn: (process.env.JWT_EXPIRES_IN ?? "7d") as jwt.SignOptions["expiresIn"],
   });
 }
