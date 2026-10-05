@@ -9,7 +9,7 @@ import { FullScreenSpinner } from "./FullScreenSpinner";
 // wrong shell, and enforces the "forced password change screen before
 // anything else is reachable" rule client-side (mirrored server-side by
 // requirePasswordSet on tenant business-data routes).
-export function RequireAuth({ role, children }: { role: Role; children: ReactNode }) {
+export function RequireAuth({ role, children }: { role: Role | Role[]; children: ReactNode }) {
   const { user, loading } = useAuth();
   const location = useLocation();
 
@@ -25,7 +25,7 @@ export function RequireAuth({ role, children }: { role: Role; children: ReactNod
     return <Navigate to="/change-password" replace />;
   }
 
-  if (user.role !== role) {
+  if (!(Array.isArray(role) ? role : [role]).includes(user.role)) {
     return <Navigate to={user.role === "SUPER_ADMIN" ? "/super-admin" : "/dashboard"} replace />;
   }
 

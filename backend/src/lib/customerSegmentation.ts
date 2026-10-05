@@ -10,10 +10,10 @@ import { prisma } from "./prisma";
 // correct than materializing it. Frequency ("purchase count in a window")
 // has no real source yet: Customer only has a running totalSpent and a
 // single lastPurchase date, neither of which can reconstruct a COUNT of
-// purchases — there is no per-purchase history until Step 4 makes Purchase
-// a real, written-to table. Deliberately not faked here (e.g. by treating
-// "has a lastPurchase" as frequency 1) — recompute this once Step 4 lands
-// and Purchase rows actually exist to count.
+// purchases. The purchase-entry API now derives recorded purchase count
+// from Purchase; older imported totals still cannot reconstruct historical
+// frequency. The existing recency/inactivity calculations continue using
+// lastPurchase, which sale recording updates transactionally.
 export function daysSinceLastPurchase(customer: { lastPurchase: Date | null }): number | null {
   if (!customer.lastPurchase) return null;
   const msPerDay = 24 * 60 * 60 * 1000;

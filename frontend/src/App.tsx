@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, Outlet } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { ToastProvider } from "./components/Toast";
 import { RequireAuth } from "./components/RequireAuth";
@@ -45,6 +45,11 @@ function NotFoundRedirect() {
   return <Navigate to={user.role === "SUPER_ADMIN" ? "/super-admin" : "/dashboard"} replace />;
 }
 
+function TenantHome() {
+  const { user } = useAuth();
+  return user?.role === "EMPLOYEE" ? <Navigate to="/dashboard/customers" replace /> : <Home />;
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -84,13 +89,14 @@ export default function App() {
             <Route
               path="/dashboard"
               element={
-                <RequireAuth role="ADMIN">
+                <RequireAuth role={["ADMIN", "EMPLOYEE"]}>
                   <TenantShell />
                 </RequireAuth>
               }
             >
-              <Route index element={<Home />} />
+              <Route index element={<TenantHome />} />
               <Route path="customers" element={<Customers />} />
+              <Route element={<RequireAuth role="ADMIN"><Outlet /></RequireAuth>}>
               <Route path="booking-requests" element={<BookingRequests />} />
               <Route path="communication" element={<Communication />} />
               <Route path="website" element={<Website />} />
@@ -99,6 +105,7 @@ export default function App() {
               <Route path="content-research-lab" element={<ContentResearchLab />} />
               <Route path="subscription" element={<Subscription />} />
               <Route path="settings" element={<Settings />} />
+              </Route>
             </Route>
 
             <Route path="*" element={<NotFoundRedirect />} />

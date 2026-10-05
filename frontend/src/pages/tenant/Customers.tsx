@@ -3,6 +3,7 @@ import axios from "axios";
 import { Trash2, Upload, Download, Eye, EyeOff } from "lucide-react";
 import {
   listCustomers,
+  getCustomer,
   createCustomer,
   deleteCustomer,
   revealCustomerField,
@@ -23,6 +24,8 @@ import { Button } from "../../components/Button";
 import { Modal } from "../../components/Modal";
 import { Table, TableHead, TableBody, TableRow, Th, Td } from "../../components/Table";
 import { ImportCustomersModal } from "../../components/ImportCustomersModal";
+import { useAuth } from "../../context/AuthContext";
+import { SaleEntry } from "../../components/SaleEntry";
 
 // How long a revealed value stays on screen before auto re-masking.
 const REVEAL_DISPLAY_MS = 18_000;
@@ -65,6 +68,11 @@ function ConsentBadge({ status }: { status: ConsentStatus }) {
 }
 
 export default function Customers() {
+  const { user } = useAuth();
+  return user?.role === "EMPLOYEE" ? <div className="px-4 py-6 sm:px-8"><h1 className="mb-4 font-serif text-2xl">Customers</h1><Card><SaleEntry /></Card></div> : <AdminCustomers />;
+}
+
+function AdminCustomers() {
   const { showToast } = useToast();
   const [customers, setCustomers] = useState<Customer[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -291,7 +299,10 @@ export default function Customers() {
         onImported={() => load(currentFilters())}
       />
 
-      <CustomerDetailModal customer={detailTarget} isPriority={detailTarget ? priorityNames.has(detailTarget.segment) : false} onClose={() => setDetailTarget(null)} />
+      <CustomerDetailModal customer={detailTarget} isPriority={detailTarget ? priorityNames.has(detailTarget.segment) : false} onClose={() => setDetailTarget(null)} onRecorded={() => {
+        load(currentFilters());
+        if (detailTarget) getCustomer(detailTarget.id).then(setDetailTarget).catch(() => showToast("Sale saved; reopen customer to refresh details.", "error"));
+      }} />
 
       <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Delete customer">
         <p className="text-sm text-neutral-600">
@@ -568,15 +579,18 @@ function CustomerDetailModal({
   customer,
   isPriority,
   onClose,
+  onRecorded,
 }: {
   customer: Customer | null;
   isPriority: boolean;
   onClose: () => void;
+  onRecorded: () => void;
 }) {
   return (
     <Modal open={!!customer} onClose={onClose} title={customer?.name ?? "Customer"}>
       {customer && (
         <div className="space-y-3">
+          <SaleEntry customerId={customer.id} onRecorded={onRecorded} />
           <RevealableField customerId={customer.id} field="phone" label="Phone" placeholder={customer.phoneMasked} />
           <RevealableField
             customerId={customer.id}

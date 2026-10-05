@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { Home, Users, MessageSquare, Globe, Share2, Wand2, Search, CreditCard, Settings as SettingsIcon, CalendarCheck, X } from "lucide-react";
 import logo from "../assets/logo.png";
+import { useAuth } from "../context/AuthContext";
 
 const NAV_ITEMS = [
   { to: "/dashboard", label: "Home", icon: Home, end: true },
@@ -16,9 +17,11 @@ const NAV_ITEMS = [
 ];
 
 function NavList({ onNavigate }: { onNavigate?: () => void }) {
+  const { user } = useAuth();
+  const items = user?.role === "EMPLOYEE" ? NAV_ITEMS.filter((item) => item.to === "/dashboard/customers") : NAV_ITEMS;
   return (
     <nav className="mt-4 flex-1 space-y-1 px-3">
-      {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
+      {items.map(({ to, label, icon: Icon, end }) => (
         <NavLink
           key={to}
           to={to}

@@ -224,7 +224,8 @@ describe("whatsapp webhook: status update processing", () => {
 
   it("updates an existing OUTBOUND Message's status when a matching WAMID status event arrives", async () => {
     const { tenant } = await createTenantWithAdmin();
-    await saveWhatsAppCredential(tenant.id, "phone-s1");
+    // The suite shares one database; template tests also use phone-s1.
+    await saveWhatsAppCredential(tenant.id, "webhook-status-s1");
 
     const conversation = await prisma.conversation.create({
       data: { tenantId: tenant.id, channel: "WHATSAPP", contactHandle: "919800000020" },
@@ -240,7 +241,7 @@ describe("whatsapp webhook: status update processing", () => {
       },
     });
 
-    const res = await postWebhookEvent(statusEvent("phone-s1", "wamid.s1", "delivered"));
+    const res = await postWebhookEvent(statusEvent("webhook-status-s1", "wamid.s1", "delivered"));
     expect(res.status).toBe(200);
 
     const updated = await prisma.message.findUnique({ where: { id: message.id } });

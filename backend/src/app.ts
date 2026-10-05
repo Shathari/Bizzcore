@@ -16,6 +16,7 @@ import { logger } from "./lib/logger";
 import authRoutes from "./routes/auth";
 import passwordResetRoutes from "./routes/passwordReset";
 import customerRoutes from "./routes/customers";
+import purchaseRoutes from "./routes/purchases";
 import superAdminRoutes from "./routes/super-admin";
 import dashboardRoutes from "./routes/dashboard";
 import communicationRoutes from "./routes/communication";
@@ -98,6 +99,7 @@ export function createApp() {
   app.use("/api/auth", authRoutes);
   app.use("/api/auth", passwordResetRoutes);
   app.use("/api/customers", customerRoutes);
+  app.use("/api/purchases", purchaseRoutes);
   app.use("/api/customer-categories", customerCategoryRoutes);
   app.use("/api/super-admin", superAdminRoutes);
   app.use("/api/dashboard", dashboardRoutes);

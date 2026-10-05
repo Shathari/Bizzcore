@@ -64,12 +64,12 @@ router.post("/login", loginRateLimiter, async (req, res) => {
   // unlike Suspended (a recoverable state a legitimate admin should be told
   // to contact support about), a deleted business shouldn't confirm to an
   // unauthenticated caller that it ever existed.
-  if (user.role === "ADMIN" && user.tenant?.deletedAt) {
+  if (user.role !== "SUPER_ADMIN" && user.tenant?.deletedAt) {
     res.status(401).json({ error: "Invalid email or password" });
     return;
   }
 
-  if (user.role === "ADMIN" && user.tenant?.status === "Suspended") {
+  if (user.role !== "SUPER_ADMIN" && user.tenant?.status === "Suspended") {
     res.status(403).json({ error: "This account has been suspended. Contact support." });
     return;
   }

@@ -128,14 +128,14 @@ model Tenant {
 
 model User {
   id                 String    @id @default(cuid())
-  // null only for SUPER_ADMIN; every ADMIN belongs to exactly one tenant
+  // null only for SUPER_ADMIN; ADMIN and EMPLOYEE belong to one tenant
   tenantId           String?
   tenant             Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name               String
   email              String    @unique
   phone              String?
   passwordHash       String
-  role               String    @default("ADMIN") // SUPER_ADMIN | ADMIN
+  role               String    @default("ADMIN") // SUPER_ADMIN | ADMIN | EMPLOYEE
   mustChangePassword Boolean   @default(false)
   lastLoginAt        DateTime?
   createdAt          DateTime  @default(now())
@@ -341,15 +341,20 @@ model CustomerTagAssignment {
 // the spec's table list, but required to back "sales analytics line chart
 // ... sourced from customer spend/purchase data" with real time-series data.
 model Purchase {
-  id          String   @id @default(cuid())
-  tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customerId  String
-  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  amount      Float
-  purchasedAt DateTime @default(now())
-  createdAt   DateTime @default(now())
+  id                 String   @id @default(cuid())
+  tenantId           String
+  tenant             Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customerId         String
+  customer           Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  amount             Float
+  purchasedAt        DateTime @default(now())
+  createdAt          DateTime @default(now())
+  // Null on historical rows; stable client request UUID for new sale retries.
+  requestId          String?
+  // SHA-256 of canonical sale input, including explicit/omitted date semantics.
+  requestFingerprint String?
 
+  @@unique([tenantId, requestId])
   @@index([tenantId])
   @@index([tenantId, purchasedAt])
 }
