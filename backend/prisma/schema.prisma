@@ -843,17 +843,20 @@ model ScheduledContent {
 
 // Evidence of an API-accepted live WhatsApp broadcast send, never an audience guess.
 model BroadcastRecipient {
-  id          String           @id @default(cuid())
-  tenantId    String
-  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  broadcastId String
-  broadcast   ScheduledContent @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
-  customerId  String
-  customer    Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  externalId  String?
-  sentAt      DateTime         @default(now())
-  deliveredAt DateTime?
-  readAt      DateTime?
+  id              String           @id @default(cuid())
+  tenantId        String
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  broadcastId     String
+  broadcast       ScheduledContent @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+  customerId      String
+  customer        Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  externalId      String?
+  sentAt          DateTime         @default(now())
+  deliveredAt     DateTime?
+  readAt          DateTime?
+  failedAt        DateTime?
+  failureCode     Int?
+  failureCategory String?
 
   @@unique([tenantId, broadcastId, customerId])
   @@index([tenantId, customerId, sentAt])

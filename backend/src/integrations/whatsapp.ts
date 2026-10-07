@@ -1,8 +1,14 @@
 import { prisma } from "../lib/prisma";
 import { decrypt } from "../lib/crypto";
 import { countDistinctVariables } from "../lib/whatsappPlaceholders";
+import { normalizePhone } from "../lib/piiCrypto";
+import { logger } from "../lib/logger";
+import { isWhatsAppMessageId, safeMetaError } from "../lib/whatsappDiagnostics";
 
 export type WhatsAppResult = {
+  accepted: boolean;
+  // Compatibility alias for existing reply/platform callers. Means accepted,
+  // never delivered; broadcast dispatch uses accepted explicitly.
   delivered: boolean;
   mode: "live" | "mock";
   error?: string;
@@ -12,6 +18,9 @@ export type WhatsAppResult = {
   // matches status-update events (delivered/read/failed) back against. See
   // schema.prisma's comment on Message.externalId for the full chain.
   externalId?: string;
+  category?: string;
+  httpStatus?: number;
+  failureCode?: number;
 };
 
 // wabaId is optional on the credential type itself (a tenant that
@@ -48,6 +57,16 @@ function messagePayload(to: string, message: OutboundMessage) {
 
 async function callWhatsAppApi(creds: WhatsAppCredentials, to: string, message: OutboundMessage): Promise<WhatsAppResult> {
   const apiVersion = process.env.WHATSAPP_GRAPH_API_VERSION ?? "v20.0";
+  // Preserve country-code-as-entered conventions. Reject unsupported input
+  // before stripping permitted formatting; never infer a missing country code.
+  const recipient = normalizePhone(to);
+  const diagnostic = message.type === "template" ? { templateName: message.name, templateLanguage: message.language } : {};
+  const failure = (category: string, httpStatus?: number, meta: Partial<ReturnType<typeof safeMetaError>> = {}) => {
+    logger.warn({ event: "whatsapp.send_result", ...diagnostic, category, httpStatus, ...meta }, "WhatsApp send not accepted");
+    return { accepted: false, delivered: false, mode: "live" as const, error: category, category, httpStatus, failureCode: meta.failureCode };
+  };
+  if (!/^\+?[\d\s().-]+$/.test(to.trim()) || !/^[1-9]\d{6,14}$/.test(recipient)) return failure("INVALID_RECIPIENT_PHONE");
+  logger.info({ event: "whatsapp.send_attempt", ...diagnostic }, "WhatsApp API request starting");
   try {
     const resp = await fetch(`https://graph.facebook.com/${apiVersion}/${creds.phoneNumberId}/messages`, {
       method: "POST",
@@ -55,29 +74,19 @@ async function callWhatsAppApi(creds: WhatsAppCredentials, to: string, message: 
         Authorization: `Bearer ${creds.accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(messagePayload(to, message)),
+      body: JSON.stringify(messagePayload(recipient, message)),
     });
     if (!resp.ok) {
-      const text = await resp.text();
-      return { delivered: false, mode: "live", error: `WhatsApp API error ${resp.status}: ${text.slice(0, 200)}` };
+      const json = await resp.json().catch(() => null) as { error?: unknown } | null;
+      return failure("META_REJECTED", resp.status, safeMetaError(json?.error));
     }
-    // { messaging_product, contacts: [...], messages: [{ id: "wamid.xxx" }] }
-    // — best-effort parse: a malformed/unexpected success body shouldn't
-    // turn a message that Meta already accepted into a reported failure.
-    let externalId: string | undefined;
-    try {
-      const json = (await resp.json()) as { messages?: Array<{ id?: string }> };
-      externalId = json.messages?.[0]?.id;
-    } catch {
-      // leave externalId undefined
-    }
-    return { delivered: true, mode: "live", externalId };
-  } catch (err) {
-    return {
-      delivered: false,
-      mode: "live",
-      error: err instanceof Error ? err.message : "Unknown WhatsApp delivery error",
-    };
+    const json = await resp.json().catch(() => null) as { messages?: Array<{ id?: unknown }> } | null;
+    const externalId: unknown = Array.isArray(json?.messages) ? json.messages[0]?.id : undefined;
+    if (!isWhatsAppMessageId(externalId)) return failure("META_INVALID_SUCCESS_RESPONSE", resp.status);
+    logger.info({ event: "whatsapp.send_result", ...diagnostic, category: "META_ACCEPTED", httpStatus: resp.status, externalId }, "WhatsApp send accepted by Meta");
+    return { accepted: true, delivered: true, mode: "live", externalId, category: "META_ACCEPTED", httpStatus: resp.status };
+  } catch {
+    return failure("META_NETWORK_ERROR");
   }
 }
 
@@ -167,8 +176,8 @@ export async function fetchWabaTemplates(
 export async function sendWhatsAppMessage(tenantId: string, to: string, body: string): Promise<WhatsAppResult> {
   const creds = await getTenantWhatsAppCredentials(tenantId);
   if (!creds) {
-    console.log(`[whatsapp:mock] Would send WhatsApp message to ${to} (no WhatsApp credentials configured for this tenant)`);
-    return { delivered: false, mode: "mock" };
+    logger.warn({ event: "whatsapp.send_result", tenantId, category: "WHATSAPP_NOT_CONFIGURED" }, "WhatsApp send skipped");
+    return { accepted: false, delivered: false, mode: "mock", category: "WHATSAPP_NOT_CONFIGURED" };
   }
   return callWhatsAppApi(creds, to, { type: "text", body });
 }
@@ -188,10 +197,8 @@ export async function sendWhatsAppTemplateMessage(
 ): Promise<WhatsAppResult> {
   const creds = await getTenantWhatsAppCredentials(tenantId);
   if (!creds) {
-    console.log(
-      `[whatsapp:mock] Would send WhatsApp template "${templateName}" to ${to} (no WhatsApp credentials configured for this tenant)`
-    );
-    return { delivered: false, mode: "mock" };
+    logger.warn({ event: "whatsapp.send_result", tenantId, templateName, templateLanguage, category: "WHATSAPP_NOT_CONFIGURED" }, "WhatsApp send skipped");
+    return { accepted: false, delivered: false, mode: "mock", category: "WHATSAPP_NOT_CONFIGURED" };
   }
   return callWhatsAppApi(creds, to, { type: "template", name: templateName, language: templateLanguage, bodyParams });
 }
@@ -242,8 +249,8 @@ function freeformCredentialText(m: PlatformCredentialMessage): string {
 export async function sendPlatformWhatsAppMessage(to: string, message: PlatformCredentialMessage): Promise<WhatsAppResult> {
   const creds = getPlatformCredentials();
   if (!creds) {
-    console.log(`[whatsapp:mock] Would send platform WhatsApp message to ${to} (WHATSAPP_PLATFORM_* not configured)`);
-    return { delivered: false, mode: "mock" };
+    logger.warn({ event: "whatsapp.send_result", category: "WHATSAPP_PLATFORM_NOT_CONFIGURED" }, "Platform WhatsApp send skipped");
+    return { accepted: false, delivered: false, mode: "mock", category: "WHATSAPP_PLATFORM_NOT_CONFIGURED" };
   }
   const templateName = process.env.WHATSAPP_PLATFORM_TEMPLATE_NAME;
   const templateLanguage = process.env.WHATSAPP_PLATFORM_TEMPLATE_LANGUAGE;

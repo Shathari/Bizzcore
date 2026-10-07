@@ -17,13 +17,14 @@ export function offerIsValid(campaign: { offerEnabled: boolean; offerStartsAt: D
 
 // Aggregation is tenant scoped and batched; purchases remain the revenue ledger.
 export async function campaignMetrics(tenantId: string, ids: string[]) {
-  if (!ids.length) return new Map<string, { sent: number; delivered: number; read: number; physicalSales: number; attributedRevenue: number; offerRedemptions: number }>();
-  const [sends, delivered, read, purchases, redemptions] = await Promise.all([
+  if (!ids.length) return new Map<string, { sent: number; delivered: number; read: number; failed: number; physicalSales: number; attributedRevenue: number; offerRedemptions: number }>();
+  const [sends, delivered, read, failed, purchases, redemptions] = await Promise.all([
     prisma.broadcastRecipient.groupBy({ by: ["broadcastId"], where: { tenantId, broadcastId: { in: ids } }, _count: { id: true } }),
     prisma.broadcastRecipient.groupBy({ by: ["broadcastId"], where: { tenantId, broadcastId: { in: ids }, deliveredAt: { not: null } }, _count: { id: true } }),
     prisma.broadcastRecipient.groupBy({ by: ["broadcastId"], where: { tenantId, broadcastId: { in: ids }, readAt: { not: null } }, _count: { id: true } }),
+    prisma.broadcastRecipient.groupBy({ by: ["broadcastId"], where: { tenantId, broadcastId: { in: ids }, failedAt: { not: null } }, _count: { id: true } }),
     prisma.purchase.groupBy({ by: ["broadcastId"], where: { tenantId, broadcastId: { in: ids } }, _count: { id: true }, _sum: { amount: true } }),
     prisma.offerRedemption.groupBy({ by: ["broadcastId"], where: { tenantId, broadcastId: { in: ids } }, _count: { id: true } }),
   ]);
-  return new Map(ids.map((id) => [id, { sent: sends.find((r) => r.broadcastId === id)?._count.id ?? 0, delivered: delivered.find((r) => r.broadcastId === id)?._count.id ?? 0, read: read.find((r) => r.broadcastId === id)?._count.id ?? 0, physicalSales: purchases.find((r) => r.broadcastId === id)?._count.id ?? 0, attributedRevenue: Math.round((purchases.find((r) => r.broadcastId === id)?._sum.amount ?? 0) * 100) / 100, offerRedemptions: redemptions.find((r) => r.broadcastId === id)?._count.id ?? 0 }]));
+  return new Map(ids.map((id) => [id, { sent: sends.find((r) => r.broadcastId === id)?._count.id ?? 0, delivered: delivered.find((r) => r.broadcastId === id)?._count.id ?? 0, read: read.find((r) => r.broadcastId === id)?._count.id ?? 0, failed: failed.find((r) => r.broadcastId === id)?._count.id ?? 0, physicalSales: purchases.find((r) => r.broadcastId === id)?._count.id ?? 0, attributedRevenue: Math.round((purchases.find((r) => r.broadcastId === id)?._sum.amount ?? 0) * 100) / 100, offerRedemptions: redemptions.find((r) => r.broadcastId === id)?._count.id ?? 0 }]));
 }

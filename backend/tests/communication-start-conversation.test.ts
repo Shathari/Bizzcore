@@ -81,7 +81,7 @@ describe("communication: POST /conversations (start a new conversation)", () => 
       .send({ channel: "WHATSAPP", contactHandle: "+919800000032", contactName: "New Customer", body: "Welcome!" });
 
     expect(res.status).toBe(201);
-    expect(res.body.delivery).toEqual({ delivered: false, mode: "mock" });
+    expect(res.body.delivery).toEqual({ accepted: false, delivered: false, mode: "mock", category: "WHATSAPP_NOT_CONFIGURED" });
     expect(res.body.conversation.contactName).toBe("New Customer");
     expect(res.body.message).toMatchObject({ direction: "OUTBOUND", body: "Welcome!", status: "sent" });
     expect(fetchSpy).not.toHaveBeenCalled();

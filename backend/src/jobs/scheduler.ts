@@ -8,6 +8,8 @@ import { logAccess } from "../lib/accessLog";
 import { checkUsageLimit, incrementUsage } from "../lib/entitlements";
 import { resolvePlaceholders, CUSTOMER_FIELD_OPTIONS, type PlaceholderMapping } from "../lib/whatsappPlaceholders";
 import { recomputeInactiveCustomers } from "../lib/customerSegmentation";
+import { logger } from "../lib/logger";
+import { isWhatsAppMessageId } from "../lib/whatsappDiagnostics";
 
 function applyTemplate(template: string, name: string): string {
   return template.replace(/\{\{\s*name\s*\}\}/gi, name);
@@ -33,6 +35,8 @@ export async function processWhatsAppBroadcast(content: {
   templateLanguage: string | null;
   placeholderConfig: string | null;
 }) {
+  const context = { tenantId: content.tenantId, broadcastId: content.id };
+  logger.info({ event: "whatsapp.broadcast_start", ...context }, "Broadcast dispatch started");
   // Marketing requires explicit opt-in, for individual and segment audiences.
   // Recheck below immediately before every send; this snapshot is not authority.
   const recipients = content.targetCustomerId
@@ -44,6 +48,7 @@ export async function processWhatsAppBroadcast(content: {
       });
 
   if (recipients.length === 0) {
+    logger.info({ event: "whatsapp.broadcast_complete", ...context, accepted: 0, category: "NO_ELIGIBLE_RECIPIENTS" }, "Broadcast dispatch completed");
     await prisma.scheduledContent.update({
       where: { id: content.id },
       data: { status: "failed", errorMessage: "No matching recipients found" },
@@ -64,6 +69,7 @@ export async function processWhatsAppBroadcast(content: {
 
   if (!usageCheck.allowed) {
     if (usageCheck.reason === "not_included") {
+      logger.info({ event: "whatsapp.broadcast_complete", ...context, accepted: 0, category: "PLAN_NOT_INCLUDED" }, "Broadcast dispatch completed");
       await prisma.scheduledContent.update({
         where: { id: content.id },
         data: { status: "failed", errorMessage: "WhatsApp messaging isn't included in this business's current plan." },
@@ -72,6 +78,7 @@ export async function processWhatsAppBroadcast(content: {
     }
     const remaining = Math.max(0, usageCheck.limit - usageCheck.used);
     if (remaining === 0) {
+      logger.info({ event: "whatsapp.broadcast_complete", ...context, accepted: 0, category: "QUOTA_EXHAUSTED" }, "Broadcast dispatch completed");
       await prisma.scheduledContent.update({
         where: { id: content.id },
         data: {
@@ -125,9 +132,7 @@ export async function processWhatsAppBroadcast(content: {
         // this recipient simply doesn't get this broadcast; every other
         // recipient is unaffected.
         skipped.push({ customerId: customer.id, field: resolved.missingField });
-        console.log(
-          `[broadcast:skip] tenant=${content.tenantId} broadcast=${content.id} customer=${customer.id} missingField=${resolved.missingField}`
-        );
+        logger.info({ event: "whatsapp.recipient_skip", ...context, customerId: customer.id, category: "MISSING_TEMPLATE_FIELD", missingField: resolved.missingField }, "Broadcast recipient skipped");
         continue;
       }
       bodyParams = resolved.params.length > 0 ? resolved.params : undefined;
@@ -139,10 +144,12 @@ export async function processWhatsAppBroadcast(content: {
       select: { consentStatus: true },
     });
     if (current?.consentStatus !== "OPTED_IN") {
+      logger.info({ event: "whatsapp.recipient_skip", ...context, customerId: customer.id, category: "NO_CURRENT_OPT_IN" }, "Broadcast recipient skipped");
       consentSkipped++;
       continue;
     }
     let result: WhatsAppResult;
+    logger.info({ event: "whatsapp.recipient_attempt", ...context, customerId: customer.id, templateName: content.templateName, templateLanguage: content.templateLanguage }, "Broadcast recipient send starting");
     if (content.templateName && content.templateLanguage) {
       result = await sendWhatsAppTemplateMessage(
         content.tenantId,
@@ -154,9 +161,9 @@ export async function processWhatsAppBroadcast(content: {
     } else {
       result = await sendWhatsAppMessage(content.tenantId, phone, applyTemplate(content.caption ?? "", customer.name));
     }
-    // 'delivered' means API-accepted in this adapter, not a read/delivery receipt.
-    if (result.mode !== "live" || !result.delivered) {
-      deliveryFailures.push(result.error ?? "WhatsApp send was not delivered (mock or unsuccessful)");
+    logger.info({ event: "whatsapp.recipient_result", ...context, customerId: customer.id, accepted: result.accepted, category: result.category, externalId: result.externalId, httpStatus: result.httpStatus, failureCode: result.failureCode }, "Broadcast recipient send completed");
+    if (result.mode !== "live" || !result.accepted || !isWhatsAppMessageId(result.externalId)) {
+      deliveryFailures.push(result.category ?? "WHATSAPP_NOT_ACCEPTED");
       continue;
     }
     sentCount++;
@@ -166,7 +173,7 @@ export async function processWhatsAppBroadcast(content: {
     // failed sends or consent-skipped recipients. Retries cannot duplicate it.
     await prisma.broadcastRecipient.upsert({
       where: { tenantId_broadcastId_customerId: { tenantId: content.tenantId, broadcastId: content.id, customerId: customer.id } },
-      create: { tenantId: content.tenantId, broadcastId: content.id, customerId: customer.id, externalId: result.externalId ?? null },
+      create: { tenantId: content.tenantId, broadcastId: content.id, customerId: customer.id, externalId: result.externalId },
       update: {},
     });
   }
@@ -194,6 +201,7 @@ export async function processWhatsAppBroadcast(content: {
         ? { status: "failed", errorMessage: notes.join(" — "), publishedAt: new Date() }
         : { status: "published", publishedAt: new Date() },
   });
+  logger.info({ event: "whatsapp.broadcast_complete", ...context, accepted: sentCount, unsuccessful: deliveryFailures.length, consentSkipped, templateSkipped: skipped.length, status: notes.length ? "failed" : "published" }, "Broadcast dispatch completed");
 }
 
 async function processSocialPost(content: {
@@ -249,9 +257,10 @@ export function startScheduler(): void {
           await processSocialPost(item);
         }
       } catch (err) {
+        logger.error({ event: "scheduler.dispatch_failed", tenantId: item.tenantId, broadcastId: item.id, category: "DISPATCH_ERROR" }, "Scheduled dispatch failed");
         await prisma.scheduledContent.update({
           where: { id: item.id },
-          data: { status: "failed", errorMessage: err instanceof Error ? err.message : "Unknown error" },
+          data: { status: "failed", errorMessage: item.kind === "WHATSAPP_BROADCAST" ? "DISPATCH_ERROR" : err instanceof Error ? err.message : "Unknown error" },
         });
       }
     }

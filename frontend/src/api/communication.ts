@@ -75,7 +75,7 @@ export type Broadcast = {
   offerDescription?: string | null;
   offerStartsAt?: string | null;
   offerEndsAt?: string | null;
-  metrics?: { sent: number; delivered: number; read: number; physicalSales: number; attributedRevenue: number; offerRedemptions: number };
+  metrics?: { sent: number; delivered: number; read: number; failed: number; physicalSales: number; attributedRevenue: number; offerRedemptions: number };
   id: string;
   // The message text. In template mode this is the template's raw {{n}}
   // body text (set server-side from the approved template, for display

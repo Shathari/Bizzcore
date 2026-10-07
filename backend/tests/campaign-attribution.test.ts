@@ -151,7 +151,7 @@ describe("physical-store campaign attribution", () => {
   it("derives Physical Sales, Attributed Revenue and Offer Redemptions from financial records", async () => {
     const f = await fixture("ADMIN", true); await post(f, sale(f, { broadcastId: f.broadcast.id, amount: 33.99 })); await post(f, sale(f, { broadcastId: f.broadcast.id, redeemOffer: true }));
     await prisma.broadcastRecipient.update({ where: { id: f.recipient.id }, data: { deliveredAt: new Date(), readAt: new Date() } });
-    const list = await request(app).get("/api/communication/broadcasts").set("Cookie", f.cookie); expect(list.body[0].metrics).toEqual({ sent: 1, delivered: 1, read: 1, physicalSales: 2, attributedRevenue: 83.99, offerRedemptions: 1 });
+    const list = await request(app).get("/api/communication/broadcasts").set("Cookie", f.cookie); expect(list.body[0].metrics).toEqual({ sent: 1, delivered: 1, read: 1, failed: 0, physicalSales: 2, attributedRevenue: 83.99, offerRedemptions: 1 });
   });
   it.each([false, true])("gates Home campaign metrics by the module (enabled=%s)", async (enabled) => {
     const f = await fixture(); vi.spyOn(modules, "getActiveModules").mockResolvedValue({ whatsappRepeatSales: enabled, website: false });

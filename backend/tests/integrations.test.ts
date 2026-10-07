@@ -36,32 +36,32 @@ describe("integrations: mock-first adapters", () => {
   it("whatsapp: runs in mock mode when no tenant credential exists", async () => {
     const { tenant } = await createTenantWithAdmin();
     const result = await sendWhatsAppMessage(tenant.id, "+919800000060", "hello");
-    expect(result).toEqual({ delivered: false, mode: "mock" });
+    expect(result).toMatchObject({ accepted: false, delivered: false, mode: "mock" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("whatsapp: attempts a live call with the correct request shape when configured", async () => {
     const { tenant } = await createTenantWithAdmin();
     await saveWhatsAppCredential(tenant.id, { phoneNumberId: "phone-999", accessToken: "wa-token" });
-    fetchSpy.mockResolvedValue({ ok: true, text: async () => "" } as Response);
+    fetchSpy.mockResolvedValue({ ok: true, json: async () => ({ messages: [{ id: "synthetic-wamid" }] }) } as Response);
 
     const result = await sendWhatsAppMessage(tenant.id, "+919800000061", "hi there");
-    expect(result).toEqual({ delivered: true, mode: "live" });
+    expect(result).toMatchObject({ accepted: true, delivered: true, mode: "live", externalId: "synthetic-wamid" });
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("phone-999/messages");
     expect(init.headers).toMatchObject({ Authorization: "Bearer wa-token" });
-    expect(JSON.parse(init.body as string)).toMatchObject({ to: "+919800000061", type: "text" });
+    expect(JSON.parse(init.body as string)).toMatchObject({ to: "919800000061", type: "text" });
   });
 
   it("whatsapp: surfaces a live delivery failure instead of silently succeeding", async () => {
     const { tenant } = await createTenantWithAdmin();
     await saveWhatsAppCredential(tenant.id, { phoneNumberId: "phone-999", accessToken: "wa-token" });
-    fetchSpy.mockResolvedValue({ ok: false, status: 401, text: async () => "invalid token" } as Response);
+    fetchSpy.mockResolvedValue({ ok: false, status: 401, json: async () => ({ error: { code: 190, message: "invalid token" } }) } as Response);
 
     const result = await sendWhatsAppMessage(tenant.id, "+919800000062", "hi");
     expect(result.delivered).toBe(false);
     expect(result.mode).toBe("live");
-    expect(result.error).toContain("401");
+    expect(result).toMatchObject({ accepted: false, category: "META_REJECTED", httpStatus: 401, failureCode: 190 });
   });
 
   it("instagram: DM send runs in mock mode without a tenant credential", async () => {
@@ -117,17 +117,17 @@ describe("integrations: mock-first adapters", () => {
 
   it("whatsapp (platform): runs in mock mode when WHATSAPP_PLATFORM_* isn't configured", async () => {
     const result = await sendPlatformWhatsAppMessage("+919800000070", credentialMessage);
-    expect(result).toEqual({ delivered: false, mode: "mock" });
+    expect(result).toMatchObject({ accepted: false, delivered: false, mode: "mock" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("whatsapp (platform): attempts a live call using BizzCore's own credentials, not any tenant's", async () => {
     process.env.WHATSAPP_PLATFORM_PHONE_NUMBER_ID = "platform-phone-1";
     process.env.WHATSAPP_PLATFORM_ACCESS_TOKEN = "platform-token";
-    fetchSpy.mockResolvedValue({ ok: true, text: async () => "" } as Response);
+    fetchSpy.mockResolvedValue({ ok: true, json: async () => ({ messages: [{ id: "synthetic-platform-id" }] }) } as Response);
 
     const result = await sendPlatformWhatsAppMessage("+919800000071", credentialMessage);
-    expect(result).toEqual({ delivered: true, mode: "live" });
+    expect(result).toMatchObject({ accepted: true, delivered: true, mode: "live", externalId: "synthetic-platform-id" });
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("platform-phone-1/messages");
     expect(init.headers).toMatchObject({ Authorization: "Bearer platform-token" });
@@ -162,7 +162,7 @@ describe("integrations: mock-first adapters", () => {
     expect(url).toContain("platform-phone-3/messages");
     expect(JSON.parse(init.body as string)).toEqual({
       messaging_product: "whatsapp",
-      to: "+919800000073",
+      to: "919800000073",
       type: "template",
       template: {
         name: "bizzcore_account_credentials",

@@ -409,6 +409,15 @@ const BROADCAST_STATUS_STYLES: Record<string, string> = {
   failed: "bg-red-100 text-red-700",
 };
 
+function broadcastStatusLabel(b: Broadcast) {
+  const sent = b.metrics?.sent ?? 0;
+  const failed = b.metrics?.failed ?? 0;
+  if (b.status === "published" && failed > 0) return failed >= sent ? "Failed" : "Partially Failed";
+  if (b.status === "published") return "Sent";
+  if (b.status === "failed") return sent > 0 ? "Partially Failed" : "Failed";
+  return b.status === "scheduled" ? "Scheduled" : b.status;
+}
+
 function Broadcasts() {
   const { showToast } = useToast();
   const [broadcasts, setBroadcasts] = useState<Broadcast[] | null>(null);
@@ -474,7 +483,7 @@ function Broadcasts() {
                   {b.title && <p className="font-medium">{b.title}</p>}
                   <p className="truncate">{b.caption}</p>
                   {b.offerEnabled && <p className="text-sm">Offer: {b.offerCode ?? "No code"} · {b.offerDescription}</p>}
-                  {b.metrics && <div className="mt-2 text-xs"><p>Recipients / Sent: {b.metrics.sent} · Delivered: {b.metrics.delivered} · Read: {b.metrics.read}</p><p>Physical Sales: {b.metrics.physicalSales} · Offer Redemptions: {b.metrics.offerRedemptions}</p><p>Attributed Revenue: {new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(b.metrics.attributedRevenue)}</p></div>}
+                  {b.metrics && <div className="mt-2 text-xs"><p>Sent / Accepted: {b.metrics.sent} · Delivered: {b.metrics.delivered} · Read: {b.metrics.read} · Failed: {b.metrics.failed ?? 0}</p><p>Physical Sales: {b.metrics.physicalSales} · Offer Redemptions: {b.metrics.offerRedemptions}</p><p>Attributed Revenue: {new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(b.metrics.attributedRevenue)}</p></div>}
                   {b.templateName && <p className="mt-0.5 text-xs text-neutral-400">Template: {b.templateName}</p>}
                 </Td>
                 <Td className="text-neutral-600">
@@ -484,11 +493,12 @@ function Broadcasts() {
                 <Td>
                   <span
                     className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                      BROADCAST_STATUS_STYLES[b.status] ?? "bg-neutral-100 text-neutral-700"
+                      BROADCAST_STATUS_STYLES[(b.metrics?.failed ?? 0) > 0 ? "failed" : b.status] ?? "bg-neutral-100 text-neutral-700"
                     }`}
                   >
-                    {b.status}
+                    {broadcastStatusLabel(b)}
                   </span>
+                  {b.status === "published" && <p className="mt-1 text-xs text-neutral-500">Accepted by Meta; delivery is tracked separately.</p>}
                   {b.status === "failed" && b.errorMessage && (
                     <p className="mt-1 text-xs text-red-500">{b.errorMessage}</p>
                   )}
