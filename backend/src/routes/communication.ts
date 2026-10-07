@@ -12,6 +12,7 @@ import { checkAndIncrementUsage } from "../lib/entitlements";
 import { isValidCategory } from "../lib/customerCategories";
 import { normalizePhone } from "../lib/piiCrypto";
 import { CUSTOMER_FIELD_OPTIONS, type CustomerField } from "../lib/whatsappPlaceholders";
+import { campaignOfferFields, campaignMetrics } from "../lib/campaignAttribution";
 
 const router = Router();
 router.use(authenticate, requirePasswordSet, resolveTenant, authorize("ADMIN"));
@@ -264,10 +265,12 @@ router.get("/broadcasts", async (req, res) => {
     ? await prisma.customer.findMany({ where: { id: { in: customerIds }, tenantId: req.tenantId } }) // tenant-scoped
     : [];
   const nameById = new Map(customers.map((c) => [c.id, c.name]));
+  const metrics = await campaignMetrics(req.tenantId!, broadcasts.map((b) => b.id));
 
   res.json(
     broadcasts.map((b) => ({
       ...b,
+      metrics: metrics.get(b.id),
       targetCustomerName: b.targetCustomerId ? (nameById.get(b.targetCustomerId) ?? null) : null,
     }))
   );
@@ -312,6 +315,7 @@ const createBroadcastSchema = z
     targetSegment: z.string().trim().min(1).optional(),
     targetCustomerId: z.string().optional(),
     scheduledAt: z.string().min(1, "Scheduled time is required"),
+    ...campaignOfferFields,
   })
   .refine((d) => Boolean(d.targetSegment) !== Boolean(d.targetCustomerId), {
     message: "Choose either a segment or an individual customer, not both",
@@ -330,6 +334,8 @@ router.post("/broadcasts", async (req, res) => {
     return;
   }
   const d = parsed.data;
+  if (!d.offerEnabled && (d.offerCode || d.offerDescription || d.offerStartsAt || d.offerEndsAt) || d.offerStartsAt && d.offerEndsAt && new Date(d.offerStartsAt) > new Date(d.offerEndsAt)) { res.status(400).json({ error: "Enable the offer and use a valid start/end period" }); return; }
+  if (d.offerCode && await prisma.scheduledContent.findFirst({ where: { tenantId: req.tenantId!, offerCode: d.offerCode }, select: { id: true } })) { res.status(409).json({ error: "This offer code is already in use" }); return; }
 
   if (d.targetCustomerId) {
     const exists = await prisma.customer.findFirst({ where: { id: d.targetCustomerId, tenantId: req.tenantId } }); // tenant-scoped
@@ -418,9 +424,18 @@ router.post("/broadcasts", async (req, res) => {
       placeholderConfig,
       scheduledAt,
       status: "scheduled",
+      title: d.title ?? null,
+      offerEnabled: d.offerEnabled ?? false,
+      offerCode: d.offerCode ?? null,
+      offerDescription: d.offerDescription ?? null,
+      offerStartsAt: d.offerStartsAt ? new Date(d.offerStartsAt) : null,
+      offerEndsAt: d.offerEndsAt ? new Date(d.offerEndsAt) : null,
     },
+  }).catch((error: unknown) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "P2002") return null;
+    throw error;
   });
-
+  if (!broadcast) { res.status(409).json({ error: "This offer code is already in use" }); return; }
   res.status(201).json(broadcast);
 });
 

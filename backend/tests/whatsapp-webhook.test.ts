@@ -1,11 +1,75 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import crypto from "crypto";
 import request from "supertest";
-import { app, createTenantWithAdmin } from "./helpers";
+import { app, createTenantWithAdmin, createTestCustomer } from "./helpers";
 import { prisma } from "../src/lib/prisma";
 import { encrypt } from "../src/lib/crypto";
 
 const APP_SECRET = "test-whatsapp-app-secret";
+
+describe("WhatsApp receipt integrity", () => {
+  const original = process.env.WHATSAPP_APP_SECRET;
+  beforeEach(() => { process.env.WHATSAPP_APP_SECRET = APP_SECRET; });
+  afterEach(() => { process.env.WHATSAPP_APP_SECRET = original; });
+  async function fixture() {
+    const rows = [];
+    for (const label of ["A", "B"]) {
+      const { tenant } = await createTenantWithAdmin();
+      const phone = "receipt-" + tenant.id;
+      await saveWhatsAppCredential(tenant.id, phone);
+      const campaign = await prisma.scheduledContent.create({ data: { tenantId: tenant.id, kind: "WHATSAPP_BROADCAST", channel: "WHATSAPP", caption: "Fixture", scheduledAt: new Date() } });
+      const conversation = await prisma.conversation.create({ data: { tenantId: tenant.id, channel: "WHATSAPP", contactHandle: tenant.id } });
+      for (const externalId of [null, "shared-message", label + "-only"]) {
+        const customer = await createTestCustomer(tenant.id);
+        await prisma.message.create({ data: { tenantId: tenant.id, conversationId: conversation.id, direction: "OUTBOUND", body: "Fixture", status: "sent", externalId } });
+        await prisma.broadcastRecipient.create({ data: { tenantId: tenant.id, broadcastId: campaign.id, customerId: customer.id, externalId } });
+      }
+      rows.push({ tenant, phone });
+    }
+    const tenantIds = rows.map(r => r.tenant.id);
+    const snapshot = async () => ({
+      messages: await prisma.message.findMany({ where: { tenantId: { in: tenantIds } }, orderBy: { id: "asc" } }),
+      recipients: await prisma.broadcastRecipient.findMany({ where: { tenantId: { in: tenantIds } }, orderBy: { id: "asc" } }),
+    });
+    const send = (status: Record<string, unknown>) => postWebhookEvent({ entry: [{ changes: [{ value: { metadata: { phone_number_id: rows[0].phone }, statuses: [status] } }] }] });
+    return { rows, snapshot, send };
+  }
+  it.each([
+    ["missing", {}], ["null", { id: null }], ["undefined", { id: undefined }],
+    ["empty", { id: "" }], ["whitespace", { id: " \t " }], ["number", { id: 123 }],
+    ["boolean", { id: true }], ["object", { id: {} }], ["array", { id: [] }],
+    ["unknown", { id: "unknown-message" }], ["other tenant", { id: "B-only" }],
+  ])("leaves all message and recipient rows unchanged for %s IDs", async (_label, id) => {
+    const f = await fixture(); const before = await f.snapshot();
+    expect((await f.send({ ...id, status: "read" })).status).toBe(200);
+    expect(await f.snapshot()).toEqual(before);
+  });
+  it.each(["delivered", "read"])("updates only matching current-tenant records for %s", async status => {
+    const f = await fixture(); const before = await f.snapshot();
+    expect((await f.send({ id: "shared-message", status })).status).toBe(200);
+    const after = await f.snapshot();
+    for (const row of after.messages) {
+      const old = before.messages.find(r => r.id === row.id)!;
+      expect(row).toEqual(row.tenantId === f.rows[0].tenant.id && row.externalId === "shared-message" ? { ...old, status } : old);
+    }
+    for (const row of after.recipients) {
+      const old = before.recipients.find(r => r.id === row.id)!;
+      if (row.tenantId === f.rows[0].tenant.id && row.externalId === "shared-message") {
+        expect(row.deliveredAt).toBeInstanceOf(Date);
+        expect(row.readAt === null).toBe(status !== "read");
+        expect({ ...row, deliveredAt: null, readAt: null }).toEqual(old);
+      } else expect(row).toEqual(old);
+    }
+  });
+  it("preserves READ and timestamps after delivered, sent and failed", async () => {
+    const f = await fixture(); await f.send({ id: "shared-message", status: "read" });
+    const read = await f.snapshot();
+    for (const status of ["delivered", "sent", "failed", "read"]) {
+      expect((await f.send({ id: "shared-message", status })).status).toBe(200);
+      expect(await f.snapshot()).toEqual(read);
+    }
+  });
+});
 
 function signatureFor(bodyStr: string, secret: string): string {
   return "sha256=" + crypto.createHmac("sha256", secret).update(Buffer.from(bodyStr, "utf8")).digest("hex");

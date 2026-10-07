@@ -92,6 +92,8 @@ model Tenant {
   messages                  Message[]
   inquiries                 Inquiry[]
   purchases                 Purchase[]
+  broadcastRecipients       BroadcastRecipient[]
+  offerRedemptions          OfferRedemption[]
   websiteVisits             WebsiteVisit[]
   socialComments            SocialComment[]
   features                  Feature[]
@@ -127,21 +129,22 @@ model Tenant {
 }
 
 model User {
-  id                 String    @id @default(cuid())
+  id                 String            @id @default(cuid())
   // null only for SUPER_ADMIN; ADMIN and EMPLOYEE belong to one tenant
   tenantId           String?
-  tenant             Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant             Tenant?           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name               String
-  email              String    @unique
+  email              String            @unique
   phone              String?
   passwordHash       String
-  role               String    @default("ADMIN") // SUPER_ADMIN | ADMIN | EMPLOYEE
-  mustChangePassword Boolean   @default(false)
+  role               String            @default("ADMIN") // SUPER_ADMIN | ADMIN | EMPLOYEE
+  mustChangePassword Boolean           @default(false)
   disabledAt         DateTime?
-  authVersion        Int       @default(0)
+  authVersion        Int               @default(0)
+  offerRedemptions   OfferRedemption[]
   lastLoginAt        DateTime?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
 
   aiGenerations       AIGeneration[]
   researchReports     ContentResearchReport[]
@@ -214,12 +217,14 @@ model Customer {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  conversations  Conversation[]
-  purchases      Purchase[]
-  inquiries      Inquiry[]
-  accessLogs     AccessLog[]
-  consentEvents  ConsentEvent[]
-  tagAssignments CustomerTagAssignment[]
+  conversations       Conversation[]
+  purchases           Purchase[]
+  broadcastRecipients BroadcastRecipient[]
+  offerRedemptions    OfferRedemption[]
+  inquiries           Inquiry[]
+  accessLogs          AccessLog[]
+  consentEvents       ConsentEvent[]
+  tagAssignments      CustomerTagAssignment[]
 
   @@index([tenantId])
   @@index([tenantId, segment])
@@ -343,22 +348,26 @@ model CustomerTagAssignment {
 // the spec's table list, but required to back "sales analytics line chart
 // ... sourced from customer spend/purchase data" with real time-series data.
 model Purchase {
-  id                 String   @id @default(cuid())
+  id                 String            @id @default(cuid())
   tenantId           String
-  tenant             Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant             Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   customerId         String
-  customer           Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customer           Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
   amount             Float
-  purchasedAt        DateTime @default(now())
-  createdAt          DateTime @default(now())
+  purchasedAt        DateTime          @default(now())
+  createdAt          DateTime          @default(now())
   // Null on historical rows; stable client request UUID for new sale retries.
   requestId          String?
   // SHA-256 of canonical sale input, including explicit/omitted date semantics.
   requestFingerprint String?
+  broadcastId        String?
+  broadcast          ScheduledContent? @relation(fields: [broadcastId], references: [id], onDelete: Restrict)
+  offerRedemption    OfferRedemption?
 
   @@unique([tenantId, requestId])
   @@index([tenantId])
   @@index([tenantId, purchasedAt])
+  @@index([tenantId, broadcastId])
 }
 
 // ---------------------------------------------------------------------------
@@ -791,9 +800,9 @@ model WebsiteContentItem {
 // ---------------------------------------------------------------------------
 
 model ScheduledContent {
-  id                String    @id @default(cuid())
+  id                String               @id @default(cuid())
   tenantId          String
-  tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant            Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   kind              String // SOCIAL_POST | WHATSAPP_BROADCAST
   channel           String // INSTAGRAM | FACEBOOK | WHATSAPP
   postType          String? // POST | STORY | REEL — social posts only
@@ -813,13 +822,62 @@ model ScheduledContent {
   templateLanguage  String? // Meta template `language` code, e.g. "en_US" — required alongside templateName
   placeholderConfig String? // JSON-encoded PlaceholderMapping[] (see lib/whatsappPlaceholders.ts) — one entry per {{n}}; null when the template has none
   scheduledAt       DateTime
-  status            String    @default("scheduled") // scheduled | published | failed
+  status            String               @default("scheduled") // scheduled | published | failed
   errorMessage      String?
   publishedAt       DateTime?
-  createdAt         DateTime  @default(now())
+  createdAt         DateTime             @default(now())
+  title             String?
+  offerEnabled      Boolean              @default(false)
+  offerCode         String?
+  offerDescription  String?
+  offerStartsAt     DateTime?
+  offerEndsAt       DateTime?
+  recipients        BroadcastRecipient[]
+  purchases         Purchase[]
+  offerRedemptions  OfferRedemption[]
 
+  @@unique([tenantId, offerCode])
   @@index([tenantId])
   @@index([status, scheduledAt])
+}
+
+// Evidence of an API-accepted live WhatsApp broadcast send, never an audience guess.
+model BroadcastRecipient {
+  id          String           @id @default(cuid())
+  tenantId    String
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  broadcastId String
+  broadcast   ScheduledContent @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+  customerId  String
+  customer    Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  externalId  String?
+  sentAt      DateTime         @default(now())
+  deliveredAt DateTime?
+  readAt      DateTime?
+
+  @@unique([tenantId, broadcastId, customerId])
+  @@index([tenantId, customerId, sentAt])
+  @@index([tenantId, externalId])
+}
+
+// No amount copy: the linked Purchase is the financial source of truth.
+model OfferRedemption {
+  id               String           @id @default(cuid())
+  tenantId         String
+  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  broadcastId      String
+  broadcast        ScheduledContent @relation(fields: [broadcastId], references: [id], onDelete: Restrict)
+  customerId       String
+  customer         Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  purchaseId       String           @unique
+  purchase         Purchase         @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  recordedByUserId String
+  recordedBy       User             @relation(fields: [recordedByUserId], references: [id], onDelete: Restrict)
+  offerCode        String?
+  redeemedAt       DateTime
+  createdAt        DateTime         @default(now())
+
+  @@index([tenantId, broadcastId])
 }
 
 // Public comments on Instagram/Facebook posts, for the Social Media

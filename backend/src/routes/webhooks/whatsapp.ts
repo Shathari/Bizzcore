@@ -53,7 +53,7 @@ type InboundMessage = {
 };
 
 type StatusUpdate = {
-  id: string;
+  id?: unknown;
   status: string; // sent | delivered | read | failed
 };
 
@@ -163,13 +163,27 @@ async function processInboundMessage(tenantId: string, value: ChangeValue, messa
 const VALID_STATUSES = new Set(["sent", "delivered", "read", "failed"]);
 
 async function processStatusUpdate(tenantId: string, statusUpdate: StatusUpdate) {
+  // Signed JSON still needs runtime validation. Keep opaque IDs unchanged;
+  // undefined/null filters would otherwise update unrelated tenant records.
+  if (typeof statusUpdate?.id !== "string" || !statusUpdate.id.trim()) return;
+  const externalId = statusUpdate.id;
   if (!VALID_STATUSES.has(statusUpdate.status)) return;
+  // Monotonic receipt timestamps: later "sent"/failed events cannot erase
+  // an already observed delivery or read. Only signed, tenant-resolved events.
+  if (statusUpdate.status === "delivered" || statusUpdate.status === "read") {
+    await prisma.broadcastRecipient.updateMany({ where: { tenantId, externalId, deliveredAt: null }, data: { deliveredAt: new Date() } });
+    if (statusUpdate.status === "read") await prisma.broadcastRecipient.updateMany({ where: { tenantId, externalId, readAt: null }, data: { readAt: new Date() } });
+  }
   // updateMany (not update): the message may not exist yet — mock-mode
   // sends never get a WAMID, and a status event can in principle arrive
   // for a message this instance hasn't seen — either way a silent no-op
   // beats a thrown not-found error over what's otherwise a routine event.
   await prisma.message.updateMany({
-    where: { tenantId, externalId: statusUpdate.id },
+    // Atomic conditional updates preserve the strongest observed receipt,
+    // including when out-of-order events are processed concurrently.
+    where: { tenantId, externalId, ...(statusUpdate.status === "read" ? {} : {
+      status: { notIn: statusUpdate.status === "delivered" ? ["read"] : ["delivered", "read"] },
+    }) },
     data: { status: statusUpdate.status },
   });
 }

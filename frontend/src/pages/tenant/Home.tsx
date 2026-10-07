@@ -80,6 +80,13 @@ export default function Home() {
         </div>
       </Card>
 
+      {summary?.modules.whatsappRepeatSales && <Card className="mt-6">
+        <h2 className="font-serif text-lg">WhatsApp physical-store campaigns</h2>
+        <p className="text-sm text-neutral-500">Sales attributed by staff confirmation.</p>
+        {!summary.whatsappCampaigns?.length && <p className="mt-3 text-sm">No campaigns yet.</p>}
+        {summary.whatsappCampaigns?.map((c) => <div key={c.id} className="mt-3 border-b pb-3"><Link to="/dashboard/communication" className="font-medium">{c.title}</Link><p className="text-sm">Sent: {c.sent} · Delivered: {c.delivered} · Read: {c.read}</p><p className="text-sm">Physical Sales: {c.physicalSales} · Offer Redemptions: {c.offerRedemptions} · Attributed Revenue: {formatCurrency(c.attributedRevenue)}</p></div>)}
+      </Card>}
+
       <Card className="mt-6">
         <h2 className="font-serif text-lg text-neutral-900">Priority follow-ups</h2>
         <p className="mt-1 text-sm text-neutral-500">Customers in a priority category (see Settings) due for outreach.</p>

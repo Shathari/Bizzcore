@@ -9,6 +9,7 @@ import { resolveTenant } from "../middleware/resolveTenant";
 import { authorize } from "../middleware/authorize";
 import { normalizePhone, phoneLookupHashes } from "../lib/piiCrypto";
 import { daysSinceLastPurchase } from "../lib/customerSegmentation";
+import { offerCodeSchema, candidateSelect, offerIsValid } from "../lib/campaignAttribution";
 
 const router = Router();
 router.use(authenticate, requirePasswordSet, resolveTenant, authorize("ADMIN", "EMPLOYEE"));
@@ -33,12 +34,28 @@ router.get("/customers/:customerId", async (req, res) => {
   const where = { tenantId, customerId: customer.id };
   const [aggregate, purchases] = await Promise.all([
     prisma.purchase.aggregate({ where, _sum: { amount: true }, _count: { id: true } }),
-    prisma.purchase.findMany({ where, select: { id: true, amount: true, purchasedAt: true }, orderBy: [{ purchasedAt: "desc" }, { id: "desc" }], take: 50 }),
+    prisma.purchase.findMany({ where, select: { id: true, amount: true, purchasedAt: true, broadcast: { select: { id: true, title: true } }, offerRedemption: { select: { offerCode: true, redeemedAt: true } } }, orderBy: [{ purchasedAt: "desc" }, { id: "desc" }], take: 50 }),
   ]);
   res.json({ customer, purchaseCount: aggregate._count.id,
     recordedTotalSpent: Math.round((aggregate._sum.amount ?? 0) * 100) / 100,
     daysSinceLastPurchase: daysSinceLastPurchase(customer), purchases,
     historyLimited: aggregate._count.id > purchases.length });
+});
+
+router.post("/customers/:customerId/campaigns", async (req, res) => {
+  const parsed = z.object({ offerCode: offerCodeSchema.optional(), purchasedAt: z.string().datetime({ offset: true }).optional() }).strict().safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Invalid campaign lookup" }); return; }
+  const tenantId = req.tenantId!;
+  if (!await prisma.customer.findFirst({ where: { id: req.params.customerId, tenantId }, select: { id: true } })) { res.status(404).json({ error: "Customer not found" }); return; }
+  const at = parsed.data.purchasedAt ? new Date(parsed.data.purchasedAt) : new Date();
+  const since = new Date(at.getTime() - 90 * 86400000);
+  const campaigns = await prisma.scheduledContent.findMany({
+    where: { tenantId, kind: "WHATSAPP_BROADCAST", channel: "WHATSAPP", ...(parsed.data.offerCode ? { offerCode: parsed.data.offerCode } : {}), recipients: { some: { tenantId, customerId: req.params.customerId, sentAt: { gte: since, lte: at } } } },
+    select: { ...candidateSelect, recipients: { where: { tenantId, customerId: req.params.customerId }, select: { sentAt: true }, take: 1 } }, orderBy: { scheduledAt: "desc" }, take: 30,
+  });
+  const result = campaigns.map(({ recipients, caption, ...campaign }) => ({ ...campaign, title: campaign.title ?? "WhatsApp campaign", sentAt: recipients[0].sentAt, offerEligible: offerIsValid(campaign, at) }));
+  if (parsed.data.offerCode && !result.some((c) => c.offerEligible)) { res.status(404).json({ error: "No eligible campaign offer found for this customer and date" }); return; }
+  res.json({ campaigns: parsed.data.offerCode ? result.filter((c) => c.offerEligible) : result });
 });
 
 const saleSchema = z.object({
@@ -47,21 +64,29 @@ const saleSchema = z.object({
   // values expressible to two decimal places, with a bounded positive amount.
   amount: z.number().finite().positive().max(1_000_000_000).refine((amount) => Math.abs(amount * 100 - Math.round(amount * 100)) < 0.00001, "Amount must have at most two decimal places"),
   purchasedAt: z.string().datetime({ offset: true }).optional(),
+  broadcastId: z.string().min(1).max(128).optional(),
+  redeemOffer: z.boolean().optional(),
+  offerCode: offerCodeSchema.optional(),
 }).strict();
 
 router.post("/", async (req, res) => {
   const parsed = saleSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid sale" }); return; }
   const input = parsed.data;
+  if ((input.redeemOffer || input.offerCode) && !input.broadcastId || input.offerCode && !input.redeemOffer) { res.status(400).json({ error: "Select a campaign to redeem its offer" }); return; }
   const tenantId = req.tenantId!;
   const amount = Math.round(input.amount * 100) / 100;
   const purchasedAt = input.purchasedAt ? new Date(input.purchasedAt) : new Date();
   // Null means the original request omitted the date, not the server-assigned
   // timestamp. Normalize explicit dates to UTC and money to integer cents.
-  const requestFingerprint = createHash("sha256").update(JSON.stringify([
+  const identity: unknown[] = [
     1, tenantId, input.customerId, Math.round(amount * 100),
     input.purchasedAt === undefined ? null : purchasedAt.toISOString(),
-  ])).digest("hex");
+  ];
+  // Keep pre-milestone unattributed fingerprints compatible. Attribution adds
+  // a versioned suffix and explicit redemption/code confirmation to identity.
+  if (input.broadcastId) { identity[0] = 2; identity.push(input.broadcastId, input.redeemOffer ?? false, input.offerCode ?? null); }
+  const requestFingerprint = createHash("sha256").update(JSON.stringify(identity)).digest("hex");
   if (purchasedAt.getTime() > Date.now() + 60_000) { res.status(400).json({ error: "A completed sale cannot be in the future" }); return; }
   const respondExisting = (existing: Purchase) => {
     // Pre-fingerprint rows cannot establish original date semantics: fail
@@ -79,7 +104,13 @@ router.post("/", async (req, res) => {
         if (!customer) return null;
         const existing = await tx.purchase.findUnique({ where: { tenantId_requestId: { tenantId, requestId: input.requestId } } });
         if (existing) return { purchase: existing, replayed: true };
-        const purchase = await tx.purchase.create({ data: { tenantId, customerId: customer.id, amount, purchasedAt, requestId: input.requestId, requestFingerprint } });
+        let campaign = null;
+        if (input.broadcastId) {
+          campaign = await tx.scheduledContent.findFirst({ where: { id: input.broadcastId, tenantId, kind: "WHATSAPP_BROADCAST", channel: "WHATSAPP", recipients: { some: { tenantId, customerId: customer.id, sentAt: { lte: purchasedAt, gte: new Date(purchasedAt.getTime() - 90 * 86400000) } } } } });
+          if (!campaign || input.redeemOffer && (!offerIsValid(campaign, purchasedAt) || input.offerCode !== undefined && input.offerCode !== campaign.offerCode)) return { invalidCampaign: true } as const;
+        }
+        const purchase = await tx.purchase.create({ data: { tenantId, customerId: customer.id, amount, purchasedAt, requestId: input.requestId, requestFingerprint, broadcastId: input.broadcastId ?? null } });
+        if (campaign && input.redeemOffer) await tx.offerRedemption.create({ data: { tenantId, broadcastId: campaign.id, customerId: customer.id, purchaseId: purchase.id, recordedByUserId: req.user!.id, offerCode: campaign.offerCode, redeemedAt: purchasedAt } });
         // Preserve imported historical totals: Purchase rows cannot reconstruct
         // those old sales. These pre-existing fields remain operational caches.
         await tx.customer.update({ where: { id: customer.id }, data: {
@@ -89,6 +120,7 @@ router.post("/", async (req, res) => {
         return { purchase, replayed: false };
       }, { isolationLevel: "Serializable" });
       if (!result) { res.status(404).json({ error: "Customer not found" }); return; }
+      if ("invalidCampaign" in result) { res.status(400).json({ error: "Campaign or offer is not eligible for this customer and purchase date" }); return; }
       if (result.replayed) respondExisting(result.purchase);
       else res.status(201).json(result);
       return;

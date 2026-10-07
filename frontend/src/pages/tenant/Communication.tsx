@@ -471,7 +471,10 @@ function Broadcasts() {
             {broadcasts?.map((b) => (
               <TableRow key={b.id}>
                 <Td className="max-w-xs text-neutral-800">
+                  {b.title && <p className="font-medium">{b.title}</p>}
                   <p className="truncate">{b.caption}</p>
+                  {b.offerEnabled && <p className="text-sm">Offer: {b.offerCode ?? "No code"} · {b.offerDescription}</p>}
+                  {b.metrics && <div className="mt-2 text-xs"><p>Recipients / Sent: {b.metrics.sent} · Delivered: {b.metrics.delivered} · Read: {b.metrics.read}</p><p>Physical Sales: {b.metrics.physicalSales} · Offer Redemptions: {b.metrics.offerRedemptions}</p><p>Attributed Revenue: {new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(b.metrics.attributedRevenue)}</p></div>}
                   {b.templateName && <p className="mt-0.5 text-xs text-neutral-400">Template: {b.templateName}</p>}
                 </Td>
                 <Td className="text-neutral-600">
@@ -567,6 +570,12 @@ function NewBroadcastModal({
 }) {
   const [messageMode, setMessageMode] = useState<"template" | "freeform">("template");
   const [caption, setCaption] = useState("");
+  const [title, setTitle] = useState("");
+  const [offerEnabled, setOfferEnabled] = useState(false);
+  const [offerCode, setOfferCode] = useState("");
+  const [offerDescription, setOfferDescription] = useState("");
+  const [offerStartsAt, setOfferStartsAt] = useState("");
+  const [offerEndsAt, setOfferEndsAt] = useState("");
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
   const [selectedKey, setSelectedKey] = useState("");
   const [placeholders, setPlaceholders] = useState<PlaceholderMapping[]>([]);
@@ -633,6 +642,7 @@ function NewBroadcastModal({
   function resetAndClose() {
     setMessageMode("template");
     setCaption("");
+    setTitle(""); setOfferEnabled(false); setOfferCode(""); setOfferDescription(""); setOfferStartsAt(""); setOfferEndsAt("");
     setSelectedKey("");
     setPlaceholders([]);
     setPreviewCustomerId("");
@@ -681,9 +691,13 @@ function NewBroadcastModal({
               targetSegment: targetType === "segment" ? segment : undefined,
               targetCustomerId: targetType === "customer" ? customerId : undefined,
               scheduledAt: new Date(scheduledAt).toISOString(),
+              title: title.trim() || undefined, offerEnabled,
+              ...(offerEnabled ? { offerCode: offerCode.trim() || undefined, offerDescription: offerDescription.trim() || undefined, offerStartsAt: offerStartsAt ? new Date(offerStartsAt).toISOString() : undefined, offerEndsAt: offerEndsAt ? new Date(offerEndsAt).toISOString() : undefined } : {}),
             }
           : {
               caption,
+              title: title.trim() || undefined, offerEnabled,
+              ...(offerEnabled ? { offerCode: offerCode.trim() || undefined, offerDescription: offerDescription.trim() || undefined, offerStartsAt: offerStartsAt ? new Date(offerStartsAt).toISOString() : undefined, offerEndsAt: offerEndsAt ? new Date(offerEndsAt).toISOString() : undefined } : {}),
               targetSegment: targetType === "segment" ? segment : undefined,
               targetCustomerId: targetType === "customer" ? customerId : undefined,
               scheduledAt: new Date(scheduledAt).toISOString(),
@@ -702,6 +716,17 @@ function NewBroadcastModal({
 
   return (
     <Modal open={open} onClose={resetAndClose} title="New Broadcast">
+      <div className="mb-4 space-y-2">
+        <label className="block text-sm">Campaign name (optional)<input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={120} className="mt-1 w-full rounded-xl border p-3" /></label>
+        <label className="flex gap-2"><input type="checkbox" checked={offerEnabled} onChange={(e) => setOfferEnabled(e.target.checked)} />Include a physical-store offer</label>
+        {offerEnabled && <>
+          <label className="block text-sm">Offer code (optional)<input value={offerCode} onChange={(e) => setOfferCode(e.target.value)} maxLength={40} className="mt-1 w-full rounded-xl border p-3" /></label>
+          <label className="block text-sm">Offer description (optional)<input value={offerDescription} onChange={(e) => setOfferDescription(e.target.value)} maxLength={500} className="mt-1 w-full rounded-xl border p-3" /></label>
+          <label className="block text-sm">Offer starts (optional)<input type="datetime-local" value={offerStartsAt} onChange={(e) => setOfferStartsAt(e.target.value)} className="mt-1 w-full rounded-xl border p-3" /></label>
+          <label className="block text-sm">Offer ends (optional)<input type="datetime-local" value={offerEndsAt} onChange={(e) => setOfferEndsAt(e.target.value)} className="mt-1 w-full rounded-xl border p-3" /></label>
+          <p className="text-xs">Put the offer/code in your message or template too. Discounts are handled at store billing.</p>
+        </>}
+      </div>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label className="block text-sm font-medium text-neutral-700">Message type</label>

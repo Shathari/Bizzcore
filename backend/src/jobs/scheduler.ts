@@ -160,8 +160,15 @@ export async function processWhatsAppBroadcast(content: {
       continue;
     }
     sentCount++;
-    // Persist each accepted send so a later recipient failure cannot erase usage.
+    // Preserve successful-send accounting even if evidence persistence fails.
     await incrementUsage(content.tenantId, "WHATSAPP_MESSAGES", 1);
+    // Evidence is recorded only after live API acceptance, never for mocks,
+    // failed sends or consent-skipped recipients. Retries cannot duplicate it.
+    await prisma.broadcastRecipient.upsert({
+      where: { tenantId_broadcastId_customerId: { tenantId: content.tenantId, broadcastId: content.id, customerId: customer.id } },
+      create: { tenantId: content.tenantId, broadcastId: content.id, customerId: customer.id, externalId: result.externalId ?? null },
+      update: {},
+    });
   }
   // Only actually-sent messages count against the plan's monthly budget —
   // a recipient skipped for missing data was never sent, so it shouldn't

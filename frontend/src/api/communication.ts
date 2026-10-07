@@ -69,6 +69,13 @@ export async function startConversation(input: {
 }
 
 export type Broadcast = {
+  title?: string | null;
+  offerEnabled?: boolean;
+  offerCode?: string | null;
+  offerDescription?: string | null;
+  offerStartsAt?: string | null;
+  offerEndsAt?: string | null;
+  metrics?: { sent: number; delivered: number; read: number; physicalSales: number; attributedRevenue: number; offerRedemptions: number };
   id: string;
   // The message text. In template mode this is the template's raw {{n}}
   // body text (set server-side from the approved template, for display
@@ -92,7 +99,7 @@ export async function listBroadcasts(): Promise<Broadcast[]> {
 }
 
 export async function createBroadcast(
-  input:
+  input: ({ title?: string; offerEnabled?: boolean; offerCode?: string; offerDescription?: string; offerStartsAt?: string; offerEndsAt?: string } & (
     | { caption: string; targetSegment?: Segment; targetCustomerId?: string; scheduledAt: string }
     | {
         templateName: string;
@@ -101,7 +108,7 @@ export async function createBroadcast(
         targetSegment?: Segment;
         targetCustomerId?: string;
         scheduledAt: string;
-      }
+      }))
 ): Promise<Broadcast> {
   const { data } = await apiClient.post<Broadcast>("/communication/broadcasts", input);
   return data;

@@ -6,6 +6,7 @@ import { authorize } from "../middleware/authorize";
 import { requirePasswordSet } from "../middleware/requirePasswordSet";
 import { listPriorityCategoryNames } from "../lib/customerCategories";
 import { getActiveModules } from "../lib/modules";
+import { campaignMetrics } from "../lib/campaignAttribution";
 
 const router = Router();
 router.use(authenticate, requirePasswordSet, resolveTenant, authorize("ADMIN"));
@@ -40,6 +41,8 @@ router.get("/summary", async (req, res) => {
 
   const priorityCategoryNames = await listPriorityCategoryNames(tenantId);
   const modules = await getActiveModules(tenantId);
+  const campaignIds = modules.whatsappRepeatSales ? await prisma.scheduledContent.findMany({ where: { tenantId, kind: "WHATSAPP_BROADCAST", channel: "WHATSAPP" }, select: { id: true, title: true }, orderBy: { scheduledAt: "desc" }, take: 5 }) : [];
+  const metrics = await campaignMetrics(tenantId, campaignIds.map((c) => c.id));
 
   const [todaysInquiries, websiteVisitorsToday, newCustomersToday, followUpCandidates, purchases] =
     await Promise.all([
@@ -87,6 +90,7 @@ router.get("/summary", async (req, res) => {
 
   res.json({
     modules,
+    ...(modules.whatsappRepeatSales ? { whatsappCampaigns: campaignIds.map((c) => ({ id: c.id, title: c.title ?? "WhatsApp campaign", ...metrics.get(c.id)! })) } : {}),
     todaysInquiries,
     websiteVisitorsToday,
     newCustomersToday,
